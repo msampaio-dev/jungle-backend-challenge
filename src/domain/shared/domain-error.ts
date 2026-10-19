@@ -22,3 +22,12 @@ export class CurrencyMismatchError extends DomainError {
     super(`currency mismatch: expected ${expected}, received ${received}`);
   }
 }
+
+export class InsufficientFundsError extends DomainError {
+  readonly code = "INSUFFICIENT_FUNDS";
+}
+
+/** Lançamento cuja aritmética não fecha. Indica bug, não regra de negócio. */
+export class UnbalancedLedgerEntryError extends DomainError {
+  readonly code = "UNBALANCED_LEDGER_ENTRY";
+}
