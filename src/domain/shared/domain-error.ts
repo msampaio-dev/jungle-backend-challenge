@@ -27,6 +27,16 @@ export class InsufficientFundsError extends DomainError {
   readonly code = "INSUFFICIENT_FUNDS";
 }
 
+/** Transação mal formada na entrada (ex.: REFUND sem referência, OPENING externo). */
+export class InvalidWagerTransactionError extends DomainError {
+  readonly code = "INVALID_TRANSACTION";
+}
+
+/** Tentativa de transição a partir de estado terminal. Indica bug, não regra de negócio. */
+export class InvalidTransactionStateError extends DomainError {
+  readonly code = "INVALID_TRANSACTION_STATE";
+}
+
 /** Lançamento cuja aritmética não fecha. Indica bug, não regra de negócio. */
 export class UnbalancedLedgerEntryError extends DomainError {
   readonly code = "UNBALANCED_LEDGER_ENTRY";

@@ -1,0 +1,306 @@
+import { Money } from "../shared/money";
+import { InvalidTransactionStateError, InvalidWagerTransactionError } from "../shared/domain-error";
+import { LedgerDirection } from "../wallet/wallet-ledger-entry";
+import { FailureCode } from "./failure-code";
+
+export enum WagerTransactionKind {
+  Opening = "OPENING", // interno: crédito de abertura da wallet
+  Bet = "BET",
+  Win = "WIN",
+  Loss = "LOSS",
+  Refund = "REFUND",
+  Rollback = "ROLLBACK",
+}
+
+export enum WagerTransactionStatus {
+  Pending = "PENDING",
+  PendingReference = "PENDING_REFERENCE",
+  Processed = "PROCESSED",
+  Rejected = "REJECTED",
+  Failed = "FAILED",
+}
+
+const TERMINAL = new Set([
+  WagerTransactionStatus.Processed,
+  WagerTransactionStatus.Rejected,
+  WagerTransactionStatus.Failed,
+]);
+
+/** Que tipo cada operação pode referenciar. */
+const ALLOWED_REFERENCES: Partial<Record<WagerTransactionKind, WagerTransactionKind[]>> = {
+  [WagerTransactionKind.Win]: [WagerTransactionKind.Bet],
+  [WagerTransactionKind.Refund]: [WagerTransactionKind.Bet],
+  [WagerTransactionKind.Rollback]: [WagerTransactionKind.Bet, WagerTransactionKind.Win, WagerTransactionKind.Refund],
+};
+
+export interface CreateWagerTransactionProps {
+  id: string;
+  providerId: string;
+  externalTransactionId: string;
+  idempotencyKey: string;
+  payloadHash: string;
+  walletId: string;
+  playerId: string;
+  roundId: string;
+  gameId: string;
+  kind: WagerTransactionKind;
+  money: Money;
+  referenceExternalTransactionId?: string | undefined;
+  createdAt: Date;
+}
+
+export interface WagerTransactionState extends Omit<CreateWagerTransactionProps, "roundId" | "gameId"> {
+  roundId: string | undefined;
+  gameId: string | undefined;
+  status: WagerTransactionStatus;
+  referenceTransactionId: string | undefined;
+  failureCode: FailureCode | undefined;
+  resultBalance: Money | undefined;
+  processedAt: Date | undefined;
+}
+
+export interface OpeningTransactionProps {
+  id: string;
+  walletId: string;
+  playerId: string;
+  money: Money;
+  payloadHash: string;
+  at: Date;
+}
+
+export const OPENING_PROVIDER_ID = "internal";
+
+/**
+ * Transições válidas:
+ *   PENDING           -> PROCESSED | REJECTED | FAILED | PENDING_REFERENCE
+ *   PENDING_REFERENCE -> PROCESSED | REJECTED | FAILED | PENDING_REFERENCE
+ *   PROCESSED, REJECTED, FAILED: terminais, não mudam mais.
+ */
+export class WagerTransaction {
+  private constructor(
+    public readonly id: string,
+    public readonly providerId: string,
+    public readonly externalTransactionId: string,
+    public readonly idempotencyKey: string,
+    public readonly payloadHash: string,
+    public readonly walletId: string,
+    public readonly playerId: string,
+    public readonly roundId: string | undefined,
+    public readonly gameId: string | undefined,
+    public readonly kind: WagerTransactionKind,
+    public readonly money: Money,
+    /** id no provedor — não o id interno */
+    public readonly referenceExternalTransactionId: string | undefined,
+    public readonly createdAt: Date,
+    private _status: WagerTransactionStatus,
+    private _referenceTransactionId?: string,
+    private _failureCode?: FailureCode,
+    private _resultBalance?: Money,
+    private _processedAt?: Date,
+  ) {}
+
+  /** Nasce em PENDING. Valida a forma da transação vinda de um provedor. */
+  static create(props: CreateWagerTransactionProps): WagerTransaction {
+    const { kind, money, referenceExternalTransactionId: reference } = props;
+
+    if (kind === WagerTransactionKind.Opening) {
+      throw new InvalidWagerTransactionError("OPENING is internal and cannot be submitted");
+    }
+    if (!Object.values(WagerTransactionKind).includes(kind)) {
+      throw new InvalidWagerTransactionError(`unknown kind: ${String(kind)}`);
+    }
+    for (const field of ["providerId", "externalTransactionId", "idempotencyKey", "roundId", "gameId"] as const) {
+      if (typeof props[field] !== "string" || props[field].trim() === "") {
+        throw new InvalidWagerTransactionError(`${field} is required`);
+      }
+    }
+    if ((kind === WagerTransactionKind.Refund || kind === WagerTransactionKind.Rollback) && !reference) {
+      throw new InvalidWagerTransactionError(`${kind} requires referenceExternalTransactionId`);
+    }
+    if ((kind === WagerTransactionKind.Bet || kind === WagerTransactionKind.Loss) && reference) {
+      throw new InvalidWagerTransactionError(`${kind} does not accept a reference`);
+    }
+    // LOSS só registra o resultado; os demais movimentam dinheiro e precisam de valor positivo
+    if (kind === WagerTransactionKind.Loss ? money.isNegative() : !money.isPositive()) {
+      throw new InvalidWagerTransactionError(`invalid amount ${money} for ${kind}`);
+    }
+
+    return new WagerTransaction(
+      props.id,
+      props.providerId,
+      props.externalTransactionId,
+      props.idempotencyKey,
+      props.payloadHash,
+      props.walletId,
+      props.playerId,
+      props.roundId,
+      props.gameId,
+      kind,
+      money,
+      reference,
+      props.createdAt,
+      WagerTransactionStatus.Pending,
+    );
+  }
+
+  /** Crédito interno de abertura da wallet, já processado. */
+  static opening(props: OpeningTransactionProps): WagerTransaction {
+    const tx = new WagerTransaction(
+      props.id,
+      OPENING_PROVIDER_ID,
+      `opening:${props.walletId}`,
+      `opening:${props.walletId}`,
+      props.payloadHash,
+      props.walletId,
+      props.playerId,
+      undefined,
+      undefined,
+      WagerTransactionKind.Opening,
+      props.money,
+      undefined,
+      props.at,
+      WagerTransactionStatus.Pending,
+    );
+    tx.markProcessed(undefined, props.at, props.money);
+    return tx;
+  }
+
+  /** Reconstrução a partir da persistência — não revalida transições. */
+  static rehydrate(state: WagerTransactionState): WagerTransaction {
+    return new WagerTransaction(
+      state.id,
+      state.providerId,
+      state.externalTransactionId,
+      state.idempotencyKey,
+      state.payloadHash,
+      state.walletId,
+      state.playerId,
+      state.roundId,
+      state.gameId,
+      state.kind,
+      state.money,
+      state.referenceExternalTransactionId,
+      state.createdAt,
+      state.status,
+      state.referenceTransactionId,
+      state.failureCode,
+      state.resultBalance,
+      state.processedAt,
+    );
+  }
+
+  get status(): WagerTransactionStatus {
+    return this._status;
+  }
+
+  get referenceTransactionId(): string | undefined {
+    return this._referenceTransactionId;
+  }
+
+  get failureCode(): FailureCode | undefined {
+    return this._failureCode;
+  }
+
+  /** Saldo da wallet observado quando a transação foi resolvida (para o replay). */
+  get resultBalance(): Money | undefined {
+    return this._resultBalance;
+  }
+
+  get processedAt(): Date | undefined {
+    return this._processedAt;
+  }
+
+  // ---- transições
+
+  markProcessed(referenceTransactionId: string | undefined, at: Date, resultBalance: Money): void {
+    this.assertNotTerminal("markProcessed");
+    this._status = WagerTransactionStatus.Processed;
+    this._referenceTransactionId = referenceTransactionId;
+    this._resultBalance = resultBalance;
+    this._processedAt = at;
+  }
+
+  markPendingReference(): void {
+    this.assertNotTerminal("markPendingReference");
+    this._status = WagerTransactionStatus.PendingReference;
+  }
+
+  reject(code: FailureCode, observedBalance: Money): void {
+    this.assertNotTerminal("reject");
+    this._status = WagerTransactionStatus.Rejected;
+    this._failureCode = code;
+    this._resultBalance = observedBalance;
+  }
+
+  fail(code: FailureCode): void {
+    this.assertNotTerminal("fail");
+    this._status = WagerTransactionStatus.Failed;
+    this._failureCode = code;
+  }
+
+  // ---- consultas
+
+  isTerminal(): boolean {
+    return TERMINAL.has(this._status);
+  }
+
+  affectsBalance(): boolean {
+    return this.kind !== WagerTransactionKind.Loss;
+  }
+
+  requiresReference(): boolean {
+    return this.kind === WagerTransactionKind.Refund || this.kind === WagerTransactionKind.Rollback;
+  }
+
+  matchesPayload(payloadHash: string): boolean {
+    return this.payloadHash === payloadHash;
+  }
+
+  /** ROLLBACK inverte a direção da referência; os demais têm direção fixa. */
+  ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
+    switch (this.kind) {
+      case WagerTransactionKind.Bet:
+        return LedgerDirection.Debit;
+      case WagerTransactionKind.Opening:
+      case WagerTransactionKind.Win:
+      case WagerTransactionKind.Refund:
+        return LedgerDirection.Credit;
+      case WagerTransactionKind.Rollback: {
+        if (!reference) throw new InvalidWagerTransactionError("ROLLBACK needs the reference to know its direction");
+        return reference.ledgerDirectionFor() === LedgerDirection.Debit ? LedgerDirection.Credit : LedgerDirection.Debit;
+      }
+      case WagerTransactionKind.Loss:
+        throw new InvalidWagerTransactionError("LOSS does not move balance");
+    }
+  }
+
+  /**
+   * Confere se a referência pode ser usada por esta transação. Não cobre
+   * "já revertida": isso depende de outras transações e fica no banco.
+   */
+  checkReference(reference: WagerTransaction): FailureCode | undefined {
+    const allowed = ALLOWED_REFERENCES[this.kind] ?? [];
+    if (!allowed.includes(reference.kind)) return FailureCode.ReferenceInvalidKind;
+
+    const sameContext =
+      reference.providerId === this.providerId &&
+      reference.playerId === this.playerId &&
+      reference.walletId === this.walletId &&
+      reference.roundId === this.roundId &&
+      reference.money.currency === this.money.currency;
+    if (!sameContext) return FailureCode.ReferenceMismatch;
+
+    if (reference.status !== WagerTransactionStatus.Processed) return FailureCode.ReferenceNotProcessed;
+
+    if (this.requiresReference() && !reference.money.equals(this.money)) {
+      return FailureCode.ReferenceAmountMismatch;
+    }
+    return undefined;
+  }
+
+  private assertNotTerminal(transition: string): void {
+    if (this.isTerminal()) {
+      throw new InvalidTransactionStateError(`${transition} on terminal transaction ${this.id} (${this._status})`);
+    }
+  }
+}
