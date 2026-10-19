@@ -21,7 +21,35 @@ async function insertWallet(id: string, player: string, balance = "100.00", curr
   );
 }
 
+/** Transação mínima válida. `fields` sobrescreve colunas. */
+async function insertTransaction(id: string, fields: Partial<Record<string, string | null>> = {}) {
+  const row: Record<string, string | null> = {
+    id,
+    provider_id: "provider-a",
+    external_transaction_id: id,
+    idempotency_key: id,
+    payload_hash: "0".repeat(64),
+    wallet_id: WALLET,
+    player_id: PLAYER,
+    round_id: "round-1",
+    game_id: "fortune-chimp",
+    kind: "BET",
+    amount: "25.00",
+    currency: "BRL",
+    status: "PENDING",
+    ...fields,
+  };
+  const columns = Object.keys(row);
+  await sql(
+    `insert into wager_transactions (${columns.join(", ")}, created_at, updated_at)
+     values (${columns.map(() => "?").join(", ")}, now(), now())
+     on conflict (id) do nothing`,
+    Object.values(row),
+  );
+}
+
 async function insertEntry(overrides: Partial<Record<string, string>> = {}) {
+  await insertTransaction(overrides.transactionId ?? TX);
   const e = {
     id: crypto.randomUUID(),
     walletId: WALLET,
@@ -102,5 +130,76 @@ describe("wallet_ledger_entries", () => {
     ["TRUNCATE", "truncate wallet_ledger_entries"],
   ])("%s é barrado pela trigger", async (_op, query) => {
     await expect(sql(query)).rejects.toThrow(/append-only/);
+  });
+});
+
+describe("wager_transactions", () => {
+  test("mesma chave de idempotência no mesmo provedor é recusada", async () => {
+    const first = crypto.randomUUID();
+    await insertTransaction(first, { idempotency_key: "provider-a:dup" });
+    await expect(
+      insertTransaction(crypto.randomUUID(), { idempotency_key: "provider-a:dup" }),
+    ).rejects.toThrow(/wager_tx_idempotency_uq/);
+  });
+
+  test("mesmo id externo no mesmo provedor é recusado", async () => {
+    await insertTransaction(crypto.randomUUID(), { external_transaction_id: "ext-dup" });
+    await expect(insertTransaction(crypto.randomUUID(), { external_transaction_id: "ext-dup" })).rejects.toThrow(
+      /wager_tx_external_id_uq/,
+    );
+  });
+
+  test("REFUND sem referência é recusado", async () => {
+    await expect(insertTransaction(crypto.randomUUID(), { kind: "REFUND" })).rejects.toThrow(
+      /wager_tx_reference_required_ck/,
+    );
+  });
+
+  test("REJECTED sem failure_code é recusado", async () => {
+    await expect(insertTransaction(crypto.randomUUID(), { status: "REJECTED" })).rejects.toThrow(
+      /wager_tx_failure_code_ck/,
+    );
+  });
+
+  test("transação terminal não pode mudar de estado", async () => {
+    const id = crypto.randomUUID();
+    await insertTransaction(id, { status: "REJECTED", failure_code: "INSUFFICIENT_FUNDS" });
+    await expect(sql("update wager_transactions set status = 'PENDING', failure_code = null where id = ?", [id]))
+      .rejects.toThrow(/is terminal/);
+  });
+
+  test("dados de negócio não mudam nem em estado pendente", async () => {
+    const id = crypto.randomUUID();
+    await insertTransaction(id);
+    await expect(sql("update wager_transactions set amount = 1 where id = ?", [id])).rejects.toThrow(
+      /business fields are immutable/,
+    );
+  });
+
+  test("transação pendente pode ser resolvida", async () => {
+    const id = crypto.randomUUID();
+    await insertTransaction(id);
+    await sql("update wager_transactions set status = 'PROCESSED', processed_at = now() where id = ?", [id]);
+  });
+
+  test("DELETE é barrado", async () => {
+    await expect(sql("delete from wager_transactions")).rejects.toThrow(/append-only/);
+  });
+
+  test("a mesma referência só pode ser revertida uma vez por tipo", async () => {
+    const now = new Date().toISOString();
+    const bet = crypto.randomUUID();
+    await insertTransaction(bet, { status: "PROCESSED", processed_at: now });
+    const refund = (id: string) =>
+      insertTransaction(id, {
+        kind: "REFUND",
+        reference_external_transaction_id: bet,
+        reference_transaction_id: bet,
+        status: "PROCESSED",
+        processed_at: now,
+      });
+
+    await refund(crypto.randomUUID());
+    await expect(refund(crypto.randomUUID())).rejects.toThrow(/wager_tx_one_reversal_per_reference_uq/);
   });
 });

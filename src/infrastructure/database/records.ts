@@ -33,6 +33,60 @@ export const WalletRecordSchema = new EntitySchema<WalletRecord>({
   },
 });
 
+export class WagerTransactionRecord {
+  id!: string;
+  providerId!: string;
+  externalTransactionId!: string;
+  idempotencyKey!: string;
+  payloadHash!: string;
+  walletId!: string;
+  playerId!: string;
+  roundId?: string | null;
+  gameId?: string | null;
+  kind!: string;
+  amount!: string;
+  currency!: string;
+  referenceExternalTransactionId?: string | null;
+  referenceTransactionId?: string | null;
+  status!: string;
+  failureCode?: string | null;
+  resultBalance?: string | null;
+  attempts!: number;
+  nextAttemptAt?: Date | null;
+  createdAt!: Date;
+  processedAt?: Date | null;
+  updatedAt!: Date;
+}
+
+export const WagerTransactionRecordSchema = new EntitySchema<WagerTransactionRecord>({
+  class: WagerTransactionRecord,
+  tableName: "wager_transactions",
+  properties: {
+    id: { type: "uuid", primary: true },
+    providerId: { type: "string" },
+    externalTransactionId: { type: "string" },
+    idempotencyKey: { type: "string" },
+    payloadHash: { type: "string", length: 64 },
+    walletId: { type: "uuid" },
+    playerId: { type: "uuid" },
+    roundId: { type: "string", nullable: true },
+    gameId: { type: "string", nullable: true },
+    kind: { type: "string" },
+    amount: { type: "decimal", precision: 18, scale: 2 },
+    currency: { type: "string", length: 3 },
+    referenceExternalTransactionId: { type: "string", nullable: true },
+    referenceTransactionId: { type: "uuid", nullable: true },
+    status: { type: "string" },
+    failureCode: { type: "string", nullable: true },
+    resultBalance: { type: "decimal", precision: 18, scale: 2, nullable: true },
+    attempts: { type: "integer" },
+    nextAttemptAt: { type: "Date", nullable: true },
+    createdAt: { type: "Date" },
+    processedAt: { type: "Date", nullable: true },
+    updatedAt: { type: "Date" },
+  },
+});
+
 export class LedgerEntryRecord {
   id!: string;
   walletId!: string;

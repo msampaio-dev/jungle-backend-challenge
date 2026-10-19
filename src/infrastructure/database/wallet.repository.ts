@@ -37,7 +37,7 @@ export class WalletRepository {
     return record ? toWallet(record) : null;
   }
 
-  async insert(em: EntityManager, wallet: Wallet, openingEntry?: WalletLedgerEntry): Promise<void> {
+  async insert(em: EntityManager, wallet: Wallet): Promise<void> {
     await em.insert(WalletRecord, {
       id: wallet.id,
       playerId: wallet.playerId,
@@ -47,7 +47,6 @@ export class WalletRepository {
       createdAt: wallet.createdAt,
       updatedAt: wallet.updatedAt,
     });
-    if (openingEntry) await this.insertEntry(em, openingEntry);
   }
 
   /**
@@ -75,7 +74,7 @@ export class WalletRepository {
     await this.insertEntry(em, entry);
   }
 
-  private async insertEntry(em: EntityManager, entry: WalletLedgerEntry): Promise<void> {
+  async insertEntry(em: EntityManager, entry: WalletLedgerEntry): Promise<void> {
     await em.insert(LedgerEntryRecord, {
       id: entry.id,
       walletId: entry.walletId,
