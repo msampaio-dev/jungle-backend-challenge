@@ -22,4 +22,8 @@ awslocal sqs create-queue \
     \"RedrivePolicy\": \"{\\\"deadLetterTargetArn\\\":\\\"$DLQ_ARN\\\",\\\"maxReceiveCount\\\":\\\"5\\\"}\"
   }"
 
+# Eventos de integração publicados pela outbox. FIFO agrupada por wallet
+# (MessageGroupId); a deduplicação por eventId é otimização, não garantia.
+awslocal sqs create-queue   --queue-name wagering-events.fifo   --attributes FifoQueue=true
+
 echo "filas SQS criadas"

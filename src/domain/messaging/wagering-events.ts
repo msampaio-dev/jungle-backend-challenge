@@ -1,6 +1,6 @@
 import type { MoneyProps } from "../shared/money";
 import type { FailureCode } from "../wagering/failure-code";
-import type { WagerTransaction } from "../wagering/wager-transaction";
+import { type WagerTransaction, WagerTransactionStatus } from "../wagering/wager-transaction";
 import type { Wallet } from "../wallet/wallet";
 import type { LedgerDirection, WalletLedgerEntry } from "../wallet/wallet-ledger-entry";
 import { type EventContext, IntegrationEvent } from "./integration-event";
@@ -83,6 +83,30 @@ export class WagerTransactionPendingReference extends IntegrationEvent<WagerTran
       ...base(tx.walletId, ctx),
       data: { ...transactionData(tx), referenceExternalTransactionId: tx.referenceExternalTransactionId! },
     });
+  }
+}
+
+/**
+ * Eventos que uma transação resolvida gera. WalletBalanceChanged só sai
+ * quando houve lançamento, ou seja, quando o saldo mudou de fato.
+ */
+export function eventsForTransaction(
+  tx: WagerTransaction,
+  wallet: Wallet,
+  entry: WalletLedgerEntry | undefined,
+  ctx: EventContext,
+): IntegrationEvent<unknown>[] {
+  switch (tx.status) {
+    case WagerTransactionStatus.Processed:
+      return entry
+        ? [WagerTransactionProcessed.from(tx, ctx), WalletBalanceChanged.from(wallet, entry, ctx)]
+        : [WagerTransactionProcessed.from(tx, ctx)];
+    case WagerTransactionStatus.Rejected:
+      return [WagerTransactionRejected.from(tx, ctx)];
+    case WagerTransactionStatus.PendingReference:
+      return [WagerTransactionPendingReference.from(tx, ctx)];
+    default:
+      return [];
   }
 }
 

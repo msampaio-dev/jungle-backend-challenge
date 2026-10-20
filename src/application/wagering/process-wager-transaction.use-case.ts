@@ -1,5 +1,8 @@
 import { UniqueConstraintViolationException } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
+import type { EventContext } from "../../domain/messaging/integration-event";
+import { OutboxMessage } from "../../domain/messaging/outbox-message";
+import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { InsufficientFundsError, InvalidWagerTransactionError } from "../../domain/shared/domain-error";
 import { Money, type MoneyProps } from "../../domain/shared/money";
 import { FailureCode } from "../../domain/wagering/failure-code";
@@ -10,6 +13,7 @@ import {
 } from "../../domain/wagering/wager-transaction";
 import type { Wallet } from "../../domain/wallet/wallet";
 import { LedgerDirection, type WalletLedgerEntry } from "../../domain/wallet/wallet-ledger-entry";
+import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { IdempotencyConflictError, WalletNotFoundError } from "../errors";
@@ -27,6 +31,9 @@ export interface SubmitWagerCommand {
   kind: string;
   money: MoneyProps;
   referenceExternalTransactionId?: string | undefined;
+  /** rastreio: id da requisição/fluxo e, no SQS, o messageId que causou a operação */
+  correlationId?: string | undefined;
+  causationId?: string | undefined;
 }
 
 export interface WagerResult {
@@ -45,6 +52,7 @@ export class ProcessWagerTransactionUseCase {
     private readonly orm: MikroORM,
     private readonly wallets = new WalletRepository(),
     private readonly transactions = new WagerTransactionRepository(),
+    private readonly outbox = new OutboxRepository(),
   ) {}
 
   async execute(command: SubmitWagerCommand): Promise<WagerResult> {
@@ -53,7 +61,8 @@ export class ProcessWagerTransactionUseCase {
     for (let attempt = 1; ; attempt++) {
       const tx = this.build(command);
       try {
-        return await this.orm.em.fork().transactional((em) => this.process(em, tx));
+        const trace = { correlationId: command.correlationId ?? tx.id, causationId: command.causationId };
+        return await this.orm.em.fork().transactional((em) => this.process(em, tx, trace));
       } catch (error) {
         const raced = error instanceof UniqueConstraintViolationException && IDEMPOTENCY_CONSTRAINTS.test(error.message);
         if (raced && attempt === 1) continue;
@@ -103,7 +112,11 @@ export class ProcessWagerTransactionUseCase {
     });
   }
 
-  private async process(em: EntityManager, tx: WagerTransaction): Promise<WagerResult> {
+  private async process(
+    em: EntityManager,
+    tx: WagerTransaction,
+    trace: Omit<EventContext, "occurredAt">,
+  ): Promise<WagerResult> {
     // 1. Replay barato, sem lock.
     const known = await this.transactions.findByIdempotencyKey(em, tx.providerId, tx.idempotencyKey);
     if (known) return this.replay(em, known, tx);
@@ -125,9 +138,14 @@ export class ProcessWagerTransactionUseCase {
     const expectedVersion = wallet.version;
     const entry = await this.resolve(em, tx, wallet, now);
 
-    // a transação vai antes do lançamento por causa da FK do ledger
+    // Tudo na mesma transação SQL: transação, saldo, lançamento e eventos.
+    // A transação vai antes do lançamento por causa da FK do ledger.
     await this.transactions.insert(em, tx, now);
     if (entry) await this.wallets.saveMovement(em, wallet, expectedVersion, entry);
+    await this.outbox.insert(
+      em,
+      eventsForTransaction(tx, wallet, entry, { ...trace, occurredAt: now }).map((e) => OutboxMessage.enqueue(e)),
+    );
 
     return toResult(tx, wallet.balance, false);
   }

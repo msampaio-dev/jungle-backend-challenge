@@ -1,8 +1,11 @@
 import { UniqueConstraintViolationException } from "@mikro-orm/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
+import { OutboxMessage } from "../../domain/messaging/outbox-message";
+import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { Money, type MoneyProps } from "../../domain/shared/money";
 import { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import { Wallet } from "../../domain/wallet/wallet";
+import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { InvalidRequestError, WalletAlreadyExistsError } from "../errors";
@@ -13,6 +16,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export interface CreateWalletCommand {
   playerId: string;
   initialBalance: MoneyProps;
+  correlationId?: string | undefined;
 }
 
 export class CreateWalletUseCase {
@@ -20,9 +24,10 @@ export class CreateWalletUseCase {
     private readonly orm: MikroORM,
     private readonly wallets = new WalletRepository(),
     private readonly transactions = new WagerTransactionRepository(),
+    private readonly outbox = new OutboxRepository(),
   ) {}
 
-  /** Wallet, transação OPENING e lançamento CREDIT na mesma transação SQL. */
+  /** Wallet, transação OPENING, lançamento CREDIT e eventos na mesma transação SQL. */
   async execute(command: CreateWalletCommand): Promise<Wallet> {
     if (typeof command.playerId !== "string" || !UUID.test(command.playerId)) {
       throw new InvalidRequestError("playerId must be a UUID");
@@ -55,6 +60,11 @@ export class CreateWalletUseCase {
           });
           await this.transactions.insert(em, opening, now);
           await this.wallets.insertEntry(em, openingEntry);
+          const ctx = { correlationId: command.correlationId ?? openingTransactionId, occurredAt: now };
+          await this.outbox.insert(
+            em,
+            eventsForTransaction(opening, wallet, openingEntry, ctx).map((e) => OutboxMessage.enqueue(e)),
+          );
         }
       });
     } catch (error) {
