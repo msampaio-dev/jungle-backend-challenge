@@ -78,6 +78,22 @@ export class WagerTransactionRepository {
   }
 
   /**
+   * Conta uma falha não transitória ao resolver a pendente e guarda a
+   * mensagem para auditoria. Roda numa transação própria: a da resolução
+   * já foi desfeita. Devolve o total de falhas (0 se não está mais pendente).
+   */
+  async recordResolutionFailure(em: EntityManager, id: string, message: string): Promise<number> {
+    const [row] = await em.execute(
+      `update wager_transactions
+          set resolution_failures = resolution_failures + 1, last_error = left(?, 1000)
+        where id = ? and status = 'PENDING_REFERENCE'
+       returning resolution_failures`,
+      [message, id],
+    );
+    return row ? Number(row.resolution_failures) : 0;
+  }
+
+  /**
    * Aluga pendentes devidas para um worker: empurra next_attempt_at para
    * daqui a leaseMs, então os outros workers não as veem. SKIP LOCKED evita
    * dois workers alugarem a mesma linha ao mesmo tempo. Se o worker morrer,

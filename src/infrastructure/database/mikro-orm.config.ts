@@ -9,6 +9,7 @@ import { Migration20261020030000SingleReversal } from "./migrations/Migration202
 import { Migration20261020040000IdentifierLength } from "./migrations/Migration20261020040000IdentifierLength";
 import { Migration20261020050000LedgerTransactionWallet } from "./migrations/Migration20261020050000LedgerTransactionWallet";
 import { Migration20261020060000PendingReferenceSchedule } from "./migrations/Migration20261020060000PendingReferenceSchedule";
+import { Migration20261020070000ResolutionFailures } from "./migrations/Migration20261020070000ResolutionFailures";
 
 export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
   return defineConfig({
@@ -28,6 +29,7 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
         { name: "Migration20261020040000IdentifierLength", class: Migration20261020040000IdentifierLength },
         { name: "Migration20261020050000LedgerTransactionWallet", class: Migration20261020050000LedgerTransactionWallet },
         { name: "Migration20261020060000PendingReferenceSchedule", class: Migration20261020060000PendingReferenceSchedule },
+        { name: "Migration20261020070000ResolutionFailures", class: Migration20261020070000ResolutionFailures },
       ],
       transactional: true,
       allOrNothing: true,

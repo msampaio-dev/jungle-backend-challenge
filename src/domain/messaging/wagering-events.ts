@@ -70,6 +70,23 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
   }
 }
 
+export interface WagerTransactionFailedData extends ReturnType<typeof transactionData> {
+  failureCode: FailureCode;
+}
+
+/** Erro permanente de processamento: não é regra de negócio, precisa de gente olhando. */
+export class WagerTransactionFailed extends IntegrationEvent<WagerTransactionFailedData> {
+  readonly eventType = "WagerTransactionFailed";
+  readonly version = 1;
+
+  static from(tx: WagerTransaction, ctx: EventContext): WagerTransactionFailed {
+    return new WagerTransactionFailed({
+      ...base(tx.walletId, ctx),
+      data: { ...transactionData(tx), failureCode: tx.failureCode! },
+    });
+  }
+}
+
 export interface WagerTransactionPendingReferenceData extends ReturnType<typeof transactionData> {
   referenceExternalTransactionId: string;
 }
@@ -105,6 +122,8 @@ export function eventsForTransaction(
       return [WagerTransactionRejected.from(tx, ctx)];
     case WagerTransactionStatus.PendingReference:
       return [WagerTransactionPendingReference.from(tx, ctx)];
+    case WagerTransactionStatus.Failed:
+      return [WagerTransactionFailed.from(tx, ctx)];
     default:
       return [];
   }

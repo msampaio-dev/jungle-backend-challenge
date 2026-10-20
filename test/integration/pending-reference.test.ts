@@ -4,6 +4,7 @@ import { PendingReferenceWorker } from "../../src/application/wagering/pending-r
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import type { ReferenceRetryPolicy } from "../../src/domain/wagering/reference-retry-policy";
 import { WagerTransactionRepository } from "../../src/infrastructure/database/wager-transaction.repository";
+import { ConnectionException } from "@mikro-orm/core";
 import { createTestOrm } from "./support/database";
 import { command, createWallet, snapshot, type TestWallet } from "./support/fixtures";
 
@@ -24,12 +25,12 @@ const fast: ReferenceRetryPolicy = { maxAttempts: 3, baseDelayMs: 1, maxDelayMs:
 
 function setup(policy?: ReferenceRetryPolicy) {
   const useCase = new ProcessWagerTransactionUseCase(orm, undefined, undefined, undefined, policy);
-  const worker = (leaseMs = 30_000) => new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 0, leaseMs });
+  const worker = (leaseMs = 30_000) => new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 0, leaseMs, maxResolutionFailures: 5 });
   return { run: (cmd: Parameters<typeof useCase.execute>[0]) => useCase.execute(cmd), worker };
 }
 
 const txRow = async (id: string) =>
-  (await sql("select status, failure_code, attempts, next_attempt_at from wager_transactions where id = ?", [id]))[0]!;
+  (await sql("select status, failure_code, attempts, next_attempt_at, resolution_failures from wager_transactions where id = ?", [id]))[0]!;
 const makeDue = (id: string) => sql("update wager_transactions set next_attempt_at = now() where id = ?", [id]);
 const eventsOf = async (walletId: string, transactionId: string) =>
   (await sql("select event_type from outbox_messages where aggregate_id = ? and payload->'data'->>'transactionId' = ? order by event_type", [walletId, transactionId])).map((r) => r.event_type);
@@ -164,5 +165,58 @@ describe("worker de PENDING_REFERENCE", () => {
     await worker().runOnce();
     expect((await txRow(refund.transactionId)).status).toBe("PROCESSED");
     expect((await snapshot(orm, w.walletId)).balance).toBe("100.00");
+  });
+
+  test("erro de programação recorrente: depois do limite a pendente vira FAILED, auditável", async () => {
+    const { run } = setup();
+    const w = await createWallet(orm, "100.00");
+    const refund = await run(refundOf(w, "bet-bug"));
+    class BuggyUseCase extends ProcessWagerTransactionUseCase {
+      override async resolve(): Promise<never> {
+        throw new Error("bug no resolve");
+      }
+    }
+    const worker = new PendingReferenceWorker(orm, new BuggyUseCase(orm), {
+      batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 3,
+    });
+
+    for (let i = 0; i < 2; i++) {
+      await makeDue(refund.transactionId);
+      await worker.runOnce();
+    }
+    expect(await txRow(refund.transactionId)).toMatchObject({ status: "PENDING_REFERENCE", resolution_failures: 2 });
+
+    await makeDue(refund.transactionId);
+    await worker.runOnce();
+    expect(await txRow(refund.transactionId)).toMatchObject({
+      status: "FAILED",
+      failure_code: "PROCESSING_FAILED",
+      resolution_failures: 3,
+      next_attempt_at: null,
+    });
+    const [audit] = await sql("select last_error from wager_transactions where id = ?", [refund.transactionId]);
+    expect(audit?.last_error).toBe("bug no resolve");
+    expect(await eventsOf(w.walletId, refund.transactionId)).toEqual(["WagerTransactionFailed", "WagerTransactionPendingReference"]);
+    expect((await snapshot(orm, w.walletId)).balance).toBe("100.00");
+  });
+
+  test("banco fora não conta como falha: a pendente continua esperando", async () => {
+    const { run } = setup();
+    const w = await createWallet(orm, "100.00");
+    const refund = await run(refundOf(w, "bet-banco-fora"));
+    class DbDownUseCase extends ProcessWagerTransactionUseCase {
+      override async resolve(): Promise<never> {
+        throw new ConnectionException(new Error("db down"));
+      }
+    }
+    const worker = new PendingReferenceWorker(orm, new DbDownUseCase(orm), {
+      batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 3,
+    });
+
+    for (let i = 0; i < 5; i++) {
+      await makeDue(refund.transactionId);
+      await worker.runOnce();
+    }
+    expect(await txRow(refund.transactionId)).toMatchObject({ status: "PENDING_REFERENCE", resolution_failures: 0 });
   });
 });

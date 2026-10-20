@@ -1,6 +1,8 @@
 import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
+import { classifyError, ErrorKind } from "../error-kind";
 import { OutboxMessage } from "../../domain/messaging/outbox-message";
+import { FailureCode } from "../../domain/wagering/failure-code";
 import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
@@ -14,15 +16,18 @@ export interface PendingReferenceWorkerOptions {
   idleDelayMs: number;
   /** por quanto tempo uma pendente alugada fica invisível para os outros workers */
   leaseMs: number;
+  /** falhas não transitórias seguidas antes de desistir com FAILED */
+  maxResolutionFailures: number;
 }
 
 export const DEFAULT_PENDING_REFERENCE_WORKER_OPTIONS: PendingReferenceWorkerOptions = {
   batchSize: 50,
   idleDelayMs: 1_000,
   leaseMs: 30_000,
+  maxResolutionFailures: 5,
 };
 
-export type PendingOutcome = "resolved" | "rescheduled" | "skipped" | "failed";
+export type PendingOutcome = "resolved" | "rescheduled" | "skipped" | "failed" | "gave-up";
 
 interface Lease {
   id: string;
@@ -66,9 +71,7 @@ export class PendingReferenceWorker {
       try {
         outcomes.push(await this.resolveOne(lease));
       } catch (error) {
-        // o aluguel vence e a pendente volta para a fila; nada fica pela metade
-        this.logger.error({ msg: "pending reference resolution failed", transactionId: lease.id, error: (error as Error).message });
-        outcomes.push("failed");
+        outcomes.push(await this.handleFailure(lease, error));
       }
     }
     return outcomes;
@@ -108,6 +111,53 @@ export class PendingReferenceWorker {
       );
       this.logger.log({ msg: "pending reference resolved", transactionId: tx.id, status: tx.status, failureCode: tx.failureCode });
       return "resolved";
+    });
+  }
+
+  /**
+   * A transação da resolução foi desfeita; o aluguel vence e a pendente volta.
+   * Erro transitório (banco fora) não conta: não é culpa da transação. Erro
+   * não transitório repetido é bug ou dado inesperado; passado o limite,
+   * vira FAILED em vez de ser tentado para sempre.
+   */
+  private async handleFailure(lease: Lease, error: unknown): Promise<PendingOutcome> {
+    const message = (error as Error)?.message ?? String(error);
+    const log = { transactionId: lease.id, error: message };
+    try {
+      if (classifyError(error) === ErrorKind.Transient) {
+        this.logger.warn({ msg: "pending reference resolution hit a transient error", ...log });
+        return "failed";
+      }
+      const failures = await this.orm.em
+        .fork()
+        .transactional((em) => this.transactions.recordResolutionFailure(em, lease.id, message));
+      this.logger.error({ msg: "pending reference resolution failed", ...log, failures });
+      if (failures < this.options.maxResolutionFailures) return "failed";
+      return await this.giveUp(lease);
+    } catch (bookkeepingError) {
+      // nem registrar deu certo (banco fora?): o aluguel vence e tenta de novo
+      this.logger.error({ msg: "could not record resolution failure", ...log, cause: (bookkeepingError as Error).message });
+      return "failed";
+    }
+  }
+
+  private giveUp(lease: Lease): Promise<PendingOutcome> {
+    return this.orm.em.fork().transactional(async (em) => {
+      const wallet = await this.wallets.lockById(em, lease.walletId);
+      const tx = await this.transactions.findById(em, lease.id);
+      if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return "skipped";
+
+      const now = new Date();
+      tx.fail(FailureCode.ProcessingFailed);
+      await this.transactions.update(em, tx, now);
+      await this.outbox.insert(
+        em,
+        eventsForTransaction(tx, wallet, undefined, { correlationId: tx.id, occurredAt: now }).map((e) =>
+          OutboxMessage.enqueue(e),
+        ),
+      );
+      this.logger.error({ msg: "pending reference marked FAILED", transactionId: tx.id });
+      return "gave-up";
     });
   }
 
