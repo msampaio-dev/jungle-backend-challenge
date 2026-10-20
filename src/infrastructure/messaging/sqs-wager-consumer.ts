@@ -125,10 +125,14 @@ export class SqsWagerConsumer {
    * waitTimeSeconds) e o que chegar durante a parada volta à fila na hora.
    */
   async stop(): Promise<void> {
+    if (!this.running) return;
+    const startedAt = performance.now();
     this.running = false;
     this.stopping = true;
     for (const wake of this.wakes) wake(); // corta só a espera entre tentativas
     await Promise.all(this.readers);
+    // confirma no log que o desligamento foi limpo (e quanto o long polling segurou)
+    this.logger.log({ msg: "sqs consumer stopped", durationMs: Math.round(performance.now() - startedAt) });
   }
 
   /** Uma leitura de UMA mensagem e o processamento dela (0 ou 1 resultado). */

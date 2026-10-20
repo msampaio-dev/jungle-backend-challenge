@@ -203,3 +203,29 @@ test("SIGTERM durante uma espera longa: o consumidor para na hora, não depois d
   await main.delete();
   await dlq.delete();
 }, 20_000);
+
+test("ao parar, cada componente registra que parou e quanto tempo levou", async () => {
+  captureLogs();
+  const dlq = await createTestQueue("stoplog-dlq");
+  const main = await createTestQueue("stoplog-main");
+  const useCase = new ProcessWagerTransactionUseCase(orm);
+  const relay = new OutboxRelay(orm, { publish: async () => {} }, { batchSize: 50, idleDelayMs: 100 });
+  const worker = new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 100, leaseMs: 30_000, maxResolutionFailures: 5 });
+  const consumer = new SqsWagerConsumer(main.client, orm, useCase, {
+    queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "stoplog", waitTimeSeconds: 1,
+    maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0, concurrency: 2,
+  });
+  relay.start();
+  worker.start();
+  consumer.start();
+  await Bun.sleep(200);
+  await Promise.all([relay.stop(), worker.stop(), consumer.stop()]);
+
+  for (const msg of ["outbox relay stopped", "pending reference worker stopped", "sqs consumer stopped"]) {
+    const line = lines.find((l) => l.msg === msg);
+    expect(line).toMatchObject({ level: "info" });
+    expect(typeof line!.durationMs).toBe("number");
+  }
+  await main.delete();
+  await dlq.delete();
+}, 20_000);

@@ -91,9 +91,12 @@ export class OutboxRelay {
 
   /** Para de buscar lotes novos e espera o lote em andamento terminar. */
   async stop(): Promise<void> {
+    if (!this.running) return;
+    const startedAt = performance.now();
     this.running = false;
     this.wake?.();
     await this.loop;
+    this.logger.log({ msg: "outbox relay stopped", durationMs: Math.round(performance.now() - startedAt) });
   }
 
   private async run(): Promise<void> {

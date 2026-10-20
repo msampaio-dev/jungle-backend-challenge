@@ -204,9 +204,12 @@ export class PendingReferenceWorker {
 
   /** Para de alugar e espera a rodada em andamento terminar. */
   async stop(): Promise<void> {
+    if (!this.running) return;
+    const startedAt = performance.now();
     this.running = false;
     this.wake?.();
     await this.loop;
+    this.logger.log({ msg: "pending reference worker stopped", durationMs: Math.round(performance.now() - startedAt) });
   }
 
   private async run(): Promise<void> {
