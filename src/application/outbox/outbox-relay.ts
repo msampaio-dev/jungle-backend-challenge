@@ -39,7 +39,9 @@ export class OutboxRelay {
 
   /** Uma rodada: trava um lote, publica um por um e grava o resultado de cada. */
   async publishBatch(): Promise<BatchResult> {
-    return this.orm.em.fork().transactional(async (em) => {
+    // métricas só valem se a transação confirmar: ficam aqui até o commit
+    const afterCommit: Array<() => void> = [];
+    const batch = await this.orm.em.fork().transactional(async (em) => {
       const messages = await this.outbox.claimDue(em, this.options.batchSize);
       // backoff calculado no relógio do banco, o mesmo que o claimDue compara
       const now = await databaseNow(em);
@@ -51,13 +53,14 @@ export class OutboxRelay {
           message.markPublished(now);
           await this.outbox.save(em, message);
           // occurred_at e now vêm do relógio do banco: o atraso é confiável
-          metrics.outboxPublishDelay.observe(Math.max(0, (now.getTime() - message.occurredAt.getTime()) / 1000));
+          const delaySeconds = Math.max(0, (now.getTime() - message.occurredAt.getTime()) / 1000);
+          afterCommit.push(() => metrics.outboxPublishDelay.observe(delaySeconds));
           result.published++;
         } catch (error) {
           // conta a partir da falha: a publicação pode ter levado o timeout inteiro
           message.scheduleRetry(await databaseNow(em));
           await this.outbox.save(em, message, (error as Error).message);
-          metrics.retries.inc({ component: "outbox_publish" });
+          afterCommit.push(() => metrics.retries.inc({ component: "outbox_publish" }));
           result.failed++;
           this.logger.warn({
             msg: "outbox publish failed",
@@ -73,6 +76,8 @@ export class OutboxRelay {
       }
       return result;
     });
+    for (const apply of afterCommit) apply();
+    return batch;
   }
 
   start(): void {

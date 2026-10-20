@@ -4,6 +4,7 @@ import { ConnectionException } from "@mikro-orm/core";
 import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
+import { OutboxRepository } from "../../src/infrastructure/database/outbox.repository";
 import { WalletRepository } from "../../src/infrastructure/database/wallet.repository";
 import { SqsWagerConsumer } from "../../src/infrastructure/messaging/sqs-wager-consumer";
 import { registry } from "../../src/infrastructure/observability/metrics";
@@ -171,6 +172,48 @@ describe("pendentes de referência", () => {
     const worker = new PendingReferenceWorker(api.orm, useCase(), { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
     const n = await delta("wagering_retries_total", { component: "pending_reference" }, () => worker.runOnce());
     expect(n).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("métricas só depois do commit", () => {
+  test("resolução do worker que é desfeita não conta como transação", async () => {
+    const w = await createWallet(api.orm, "100.00");
+    await useCase().execute(command(w, { kind: "REFUND", amount: "10.00", referenceExternalTransactionId: "bet-rollback-metric" }));
+    await useCase().execute(command(w, { amount: "10.00", externalTransactionId: "bet-rollback-metric" }));
+
+    class BrokenOutbox extends OutboxRepository {
+      override async insert(): Promise<void> {
+        throw new Error("disk full");
+      }
+    }
+    const worker = new PendingReferenceWorker(
+      api.orm,
+      useCase(),
+      { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 },
+      undefined,
+      undefined,
+      new BrokenOutbox(),
+    );
+    const labels = { channel: "worker", kind: "REFUND", status: "PROCESSED" };
+    expect(await delta("wagering_transactions_total", labels, () => worker.runOnce())).toBe(0);
+  });
+
+  test("publicação cuja transação é desfeita não conta atraso de publicação", async () => {
+    await createWallet(api.orm, "100.00");
+    class BrokenSave extends OutboxRepository {
+      override async save(): Promise<void> {
+        throw new Error("disk full");
+      }
+    }
+    const relay = new OutboxRelay(api.orm, { publish: async () => {} }, { batchSize: 1, idleDelayMs: 0 }, new BrokenSave());
+    const n = await delta(
+      "outbox_publish_delay_seconds",
+      {},
+      () => relay.publishBatch().catch(() => {}),
+      "outbox_publish_delay_seconds_count",
+    );
+    expect(n).toBe(0);
+    await api.orm.em.getConnection().execute("update outbox_messages set published_at = now() where published_at is null");
   });
 });
 

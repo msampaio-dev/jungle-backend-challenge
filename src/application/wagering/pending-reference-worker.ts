@@ -86,8 +86,10 @@ export class PendingReferenceWorker {
     return outcomes;
   }
 
-  private resolveOne(lease: Lease): Promise<PendingOutcome> {
-    return this.orm.em.fork().transactional(async (em) => {
+  private async resolveOne(lease: Lease): Promise<PendingOutcome> {
+    // métricas só valem se a transação confirmar: ficam aqui até o commit
+    const afterCommit: Array<() => void> = [];
+    const outcome = await this.orm.em.fork().transactional(async (em): Promise<PendingOutcome> => {
       // wallet primeiro, como no use case: mesma ordem de locks em todo lugar
       const wallet = await this.wallets.lockById(em, lease.walletId);
       const tx = await this.transactions.findById(em, lease.id);
@@ -112,10 +114,10 @@ export class PendingReferenceWorker {
       if (entry) await this.wallets.saveMovement(em, wallet, expectedVersion, entry);
 
       if (!tx.isTerminal()) {
-        metrics.retries.inc({ component: "pending_reference" });
+        afterCommit.push(() => metrics.retries.inc({ component: "pending_reference" }));
         return "rescheduled"; // reagendamento não gera evento
       }
-      metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status });
+      afterCommit.push(() => metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status }));
 
       // em cadeia: um ROLLBACK pendente pode estar esperando por este REFUND
       await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
@@ -126,9 +128,13 @@ export class PendingReferenceWorker {
         em,
         eventsForTransaction(tx, wallet, entry, ctx).map((e) => OutboxMessage.enqueue(e)),
       );
-      this.logger.log({ msg: "pending reference resolved", transactionId: tx.id, status: tx.status, failureCode: tx.failureCode });
+      afterCommit.push(() =>
+        this.logger.log({ msg: "pending reference resolved", transactionId: tx.id, status: tx.status, failureCode: tx.failureCode }),
+      );
       return "resolved";
     });
+    for (const apply of afterCommit) apply();
+    return outcome;
   }
 
   /**
@@ -159,8 +165,9 @@ export class PendingReferenceWorker {
     }
   }
 
-  private giveUp(lease: Lease): Promise<PendingOutcome> {
-    return this.orm.em.fork().transactional(async (em) => {
+  private async giveUp(lease: Lease): Promise<PendingOutcome> {
+    const afterCommit: Array<() => void> = [];
+    const outcome = await this.orm.em.fork().transactional(async (em): Promise<PendingOutcome> => {
       const wallet = await this.wallets.lockById(em, lease.walletId);
       const tx = await this.transactions.findById(em, lease.id);
       if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return "skipped";
@@ -176,10 +183,14 @@ export class PendingReferenceWorker {
           OutboxMessage.enqueue(e),
         ),
       );
-      metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status });
-      this.logger.error({ msg: "pending reference marked FAILED", transactionId: tx.id });
+      afterCommit.push(() => {
+        metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status });
+        this.logger.error({ msg: "pending reference marked FAILED", transactionId: tx.id });
+      });
       return "gave-up";
     });
+    for (const apply of afterCommit) apply();
+    return outcome;
   }
 
   start(): void {
