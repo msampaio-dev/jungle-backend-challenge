@@ -52,6 +52,8 @@ export interface WagerResult {
   balance: MoneyProps;
   idempotentReplay: boolean;
   failureCode?: FailureCode | undefined;
+  /** só em PENDING_REFERENCE: quando a referência será procurada de novo (ISO-8601) */
+  nextReferenceCheckAt?: string | undefined;
 }
 
 export interface ExecuteOptions {
@@ -268,5 +270,6 @@ function toResult(tx: WagerTransaction, balance: Money, idempotentReplay: boolea
     balance: balance.toJSON(),
     idempotentReplay,
     ...(tx.failureCode ? { failureCode: tx.failureCode } : {}),
+    ...(tx.nextReferenceCheckAt ? { nextReferenceCheckAt: tx.nextReferenceCheckAt.toISOString() } : {}),
   };
 }

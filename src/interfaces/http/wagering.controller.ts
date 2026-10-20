@@ -28,6 +28,11 @@ export class WageringController {
 
     const result = await this.processWager.execute(toCommand(idempotencyKey, body));
     response.status(statusFor(result));
+    if (result.nextReferenceCheckAt) {
+      // 202: quando vale a pena consultar de novo (segundos, no mínimo 1)
+      const seconds = Math.ceil((Date.parse(result.nextReferenceCheckAt) - Date.now()) / 1000);
+      response.setHeader("Retry-After", String(Math.max(1, seconds)));
+    }
     return result;
   }
 

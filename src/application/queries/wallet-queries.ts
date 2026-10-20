@@ -48,6 +48,9 @@ export interface TransactionView {
   resultBalance: MoneyProps | null;
   createdAt: string;
   processedAt: string | null;
+  /** tentativas de achar a referência e, se ainda pendente, a próxima */
+  referenceAttempts: number;
+  nextReferenceCheckAt: string | null;
 }
 
 export interface ReconciliationResult {
@@ -188,7 +191,8 @@ export class WalletQueries {
     const [r] = await this.sql(
       `select id, provider_id, external_transaction_id, wallet_id, player_id, round_id, game_id, kind,
               amount::text as amount, currency, status, failure_code, reference_external_transaction_id,
-              reference_transaction_id, result_balance::text as result_balance, created_at, processed_at
+              reference_transaction_id, result_balance::text as result_balance, created_at, processed_at,
+              attempts, case when status = 'PENDING_REFERENCE' then next_attempt_at end as next_attempt_at
          from wager_transactions where ${where}`,
       params,
     );
@@ -210,6 +214,8 @@ export class WalletQueries {
       resultBalance: r.result_balance == null ? null : money(r.result_balance, r.currency),
       createdAt: new Date(r.created_at as string).toISOString(),
       processedAt: r.processed_at ? new Date(r.processed_at as string).toISOString() : null,
+      referenceAttempts: Number(r.attempts),
+      nextReferenceCheckAt: r.next_attempt_at ? new Date(r.next_attempt_at as string).toISOString() : null,
     };
   }
 

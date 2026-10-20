@@ -107,11 +107,32 @@ describe("POST /wagering/transactions — status", () => {
     expect(replay.body.idempotentReplay).toBe(true);
   });
 
-  test("202 quando a referência ainda não chegou", async () => {
+  test("202 quando a referência ainda não chegou, dizendo quando consultar de novo", async () => {
     const w = await newWallet();
-    const res = await wager(w, { kind: "REFUND", referenceExternalTransactionId: "nao-chegou" }).send();
+    const refund = wager(w, { kind: "REFUND", referenceExternalTransactionId: "nao-chegou" });
+    const res = await refund.send();
     expect(res.status).toBe(202);
     expect(res.body.status).toBe("PENDING_REFERENCE");
+    expect(Number(res.headers.get("retry-after"))).toBeGreaterThanOrEqual(1);
+    expect(Number(res.headers.get("retry-after"))).toBeLessThanOrEqual(2);
+    expect(Date.parse(res.body.nextReferenceCheckAt)).toBeGreaterThan(Date.now());
+
+    const replay = await refund.send();
+    expect(replay.status).toBe(202);
+    expect(replay.headers.get("retry-after")).not.toBeNull();
+    expect(replay.body.nextReferenceCheckAt).toBe(res.body.nextReferenceCheckAt);
+
+    const view = await api.call("GET", `/wagering/transactions/${res.body.transactionId}`);
+    expect(view.body).toMatchObject({ referenceAttempts: 1, nextReferenceCheckAt: res.body.nextReferenceCheckAt });
+  });
+
+  test("transação resolvida não anuncia próxima checagem", async () => {
+    const w = await newWallet();
+    const res = await wager(w).send();
+    expect(res.headers.get("retry-after")).toBeNull();
+    expect(res.body.nextReferenceCheckAt).toBeUndefined();
+    const view = await api.call("GET", `/wagering/transactions/${res.body.transactionId}`);
+    expect(view.body).toMatchObject({ referenceAttempts: 0, nextReferenceCheckAt: null });
   });
 
   test("409 com a mesma chave e payload diferente", async () => {
