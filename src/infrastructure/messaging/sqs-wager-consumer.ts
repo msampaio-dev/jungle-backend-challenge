@@ -119,8 +119,13 @@ export class SqsWagerConsumer {
     const outcomes = await Promise.all(
       [...groups.values()].map(async (group) => {
         const results: Outcome[] = [];
+        let blocked = false;
         for (const message of group) {
-          results.push(this.stopping ? await this.release(message) : await this.handle(message));
+          // Se uma mensagem do grupo voltou para retry, as seguintes não podem
+          // passar na frente: voltam para a fila e a FIFO as entrega depois dela.
+          const outcome = this.stopping || blocked ? await this.release(message) : await this.handle(message);
+          if (outcome === "retry") blocked = true;
+          results.push(outcome);
         }
         return results;
       }),

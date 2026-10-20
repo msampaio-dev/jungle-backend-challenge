@@ -139,6 +139,26 @@ describe("consumidor SQS", () => {
     expect((await snapshot(orm, w.walletId)).debits).toBe(1);
   });
 
+  test("depois de um retry, as próximas mensagens da mesma wallet esperam a vez", async () => {
+    const w = await createWallet(orm, "100.00");
+    await main.send(envelope(w, { amount: "10.00" }), w.walletId);
+    await main.send(envelope(w, { amount: "20.00" }), w.walletId);
+
+    const real = useCase();
+    const applied: string[] = [];
+    let calls = 0;
+    const flaky = {
+      execute: async (...args: Parameters<ProcessWagerTransactionUseCase["execute"]>) => {
+        if (++calls === 1) throw new ConnectionException(new Error("blip"));
+        applied.push(args[0].money.amount);
+        return real.execute(...args);
+      },
+    };
+
+    await consumeAll(consumer(flaky));
+    expect(applied).toEqual(["10.00", "20.00"]);
+  });
+
   test("worker morto depois do commit e antes do ack: reentrega não duplica", async () => {
     const w = await createWallet(orm, "100.00");
     const msg = envelope(w, { amount: "25.00" });
