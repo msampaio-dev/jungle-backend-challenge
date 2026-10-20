@@ -170,6 +170,8 @@ export class ProcessWagerTransactionUseCase {
     // A transação vai antes do lançamento por causa da FK do ledger.
     await this.transactions.insert(em, tx, now);
     if (entry) await this.wallets.saveMovement(em, wallet, expectedVersion, entry);
+    // quem estava esperando por esta transação pode ser resolvido já
+    if (tx.isTerminal()) await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
     await this.outbox.insert(
       em,
       eventsForTransaction(tx, wallet, entry, { ...trace, occurredAt: now }).map((e) => OutboxMessage.enqueue(e)),

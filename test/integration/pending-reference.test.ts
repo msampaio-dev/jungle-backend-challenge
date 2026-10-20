@@ -239,4 +239,60 @@ describe("worker de PENDING_REFERENCE", () => {
       { event_type: "WalletBalanceChanged", correlation_id: "corr-abc-123" },
     ]);
   });
+
+  test("BET chega: a pendente que a referencia fica devida na hora, sem esperar o agendamento", async () => {
+    const { run, worker } = setup();
+    const w = await createWallet(orm, "100.00");
+    const refund = await run(refundOf(w, "bet-acorda"));
+    // simula uma pendente já nas últimas tentativas: próxima checagem só daqui a 2 minutos
+    await sql("update wager_transactions set next_attempt_at = now() + interval '2 minutes' where id = ?", [refund.transactionId]);
+
+    await run(command(w, { amount: "30.00", externalTransactionId: "bet-acorda" }));
+
+    const [due] = await sql("select next_attempt_at <= clock_timestamp() as due from wager_transactions where id = ?", [refund.transactionId]);
+    expect(due!.due).toBe(true);
+    await worker().runOnce(); // sem makeDue
+    expect((await txRow(refund.transactionId)).status).toBe("PROCESSED");
+  });
+
+  test("BET rejeitada também acorda a pendente (que vira REFERENCE_NOT_PROCESSED)", async () => {
+    const { run, worker } = setup();
+    const w = await createWallet(orm, "10.00");
+    const refund = await run(refundOf(w, "bet-rejeitada-acorda"));
+    await run(command(w, { amount: "30.00", externalTransactionId: "bet-rejeitada-acorda" }));
+
+    await worker().runOnce(); // sem makeDue
+    expect(await txRow(refund.transactionId)).toMatchObject({ status: "REJECTED", failure_code: "REFERENCE_NOT_PROCESSED" });
+  });
+
+  test("em cadeia: resolver o REFUND acorda o ROLLBACK que aponta para ele", async () => {
+    const { run, worker } = setup();
+    const w = await createWallet(orm, "100.00");
+    const refundCmd = refundOf(w, "bet-cadeia");
+    const refund = await run(refundCmd);
+    const rollback = await run(
+      command(w, { kind: "ROLLBACK", amount: "30.00", referenceExternalTransactionId: refundCmd.externalTransactionId }),
+    );
+    expect(String(rollback.status)).toBe("PENDING_REFERENCE");
+
+    await run(command(w, { amount: "30.00", externalTransactionId: "bet-cadeia" }));
+    await worker().runOnce(); // resolve o REFUND e acorda o ROLLBACK
+    await worker().runOnce(); // resolve o ROLLBACK, sem makeDue
+
+    expect((await txRow(refund.transactionId)).status).toBe("PROCESSED");
+    expect((await txRow(rollback.transactionId)).status).toBe("PROCESSED");
+    expect((await snapshot(orm, w.walletId)).balance).toBe("70.00"); // 100 - 30 + 30 - 30
+  });
+
+  test("não acorda pendente de outro provedor com o mesmo id externo", async () => {
+    const { run } = setup();
+    const w = await createWallet(orm, "100.00");
+    const other = await run({ ...refundOf(w, "bet-homonima"), providerId: "provider-b", idempotencyKey: "provider-b:x-1", externalTransactionId: "x-1" });
+    await sql("update wager_transactions set next_attempt_at = now() + interval '2 minutes' where id = ?", [other.transactionId]);
+
+    await run(command(w, { amount: "30.00", externalTransactionId: "bet-homonima" })); // provider-a
+
+    const [due] = await sql("select next_attempt_at <= clock_timestamp() as due from wager_transactions where id = ?", [other.transactionId]);
+    expect(due!.due).toBe(false);
+  });
 });

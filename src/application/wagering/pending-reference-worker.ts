@@ -104,6 +104,9 @@ export class PendingReferenceWorker {
 
       if (!tx.isTerminal()) return "rescheduled"; // reagendamento não gera evento
 
+      // em cadeia: um ROLLBACK pendente pode estar esperando por este REFUND
+      await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
+
       // eventos da resolução continuam o rastro da requisição original
       const ctx = { correlationId: tx.correlationId, occurredAt: now };
       await this.outbox.insert(
@@ -151,6 +154,8 @@ export class PendingReferenceWorker {
       const now = await databaseNow(em);
       tx.fail(FailureCode.ProcessingFailed);
       await this.transactions.update(em, tx, now);
+      // quem esperava por esta transação também precisa descobrir que ela falhou
+      await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
       await this.outbox.insert(
         em,
         eventsForTransaction(tx, wallet, undefined, { correlationId: tx.correlationId, occurredAt: now }).map((e) =>

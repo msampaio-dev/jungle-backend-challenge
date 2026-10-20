@@ -79,6 +79,28 @@ export class WagerTransactionRepository {
   }
 
   /**
+   * A transação (providerId, externalTransactionId) acabou de chegar a um
+   * estado final: as pendentes que apontam para ela podem ser resolvidas
+   * agora, sem esperar o agendamento (que pode estar a até 2 min). Só
+   * antecipa a data; quem resolve continua sendo o worker. Se uma delas
+   * estiver alugada por um worker, o outro que a pegar relê o estado com
+   * a wallet travada e pula.
+   */
+  async wakePendingDependents(em: EntityManager, providerId: string, externalTransactionId: string): Promise<number> {
+    const rows = await em.execute(
+      `update wager_transactions
+          set next_attempt_at = clock_timestamp()
+        where status = 'PENDING_REFERENCE'
+          and provider_id = ?
+          and reference_external_transaction_id = ?
+          and next_attempt_at > clock_timestamp()
+       returning id`,
+      [providerId, externalTransactionId],
+    );
+    return rows.length;
+  }
+
+  /**
    * Conta uma falha não transitória ao resolver a pendente e guarda a
    * mensagem para auditoria. Roda numa transação própria: a da resolução
    * já foi desfeita. Devolve o total de falhas (0 se não está mais pendente).
