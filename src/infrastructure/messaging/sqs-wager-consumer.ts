@@ -73,6 +73,7 @@ export class SqsWagerConsumer {
   start(): void {
     if (this.running) return;
     this.running = true;
+    this.stopping = false; // sem isto, depois de um stop() tudo seria devolvido à fila para sempre
     this.loop = this.run();
   }
 

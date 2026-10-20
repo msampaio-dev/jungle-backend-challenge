@@ -213,6 +213,21 @@ describe("consumidor SQS", () => {
     expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
   });
 
+  test("consumidor parado e iniciado de novo volta a processar", async () => {
+    const worker = consumer();
+    worker.start();
+    await worker.stop();
+    worker.start();
+
+    const w = await createWallet(orm, "100.00");
+    await main.send(envelope(w, { amount: "25.00" }), w.walletId);
+    const deadline = Date.now() + 8_000;
+    while ((await snapshot(orm, w.walletId)).debits === 0 && Date.now() < deadline) await Bun.sleep(200);
+    await worker.stop();
+
+    expect((await snapshot(orm, w.walletId)).debits).toBe(1);
+  });
+
   test("SIGTERM: termina a mensagem em andamento e devolve as outras à fila", async () => {
     const w = await createWallet(orm, "100.00");
     for (let i = 0; i < 3; i++) await main.send(envelope(w, { amount: "10.00" }), w.walletId);
