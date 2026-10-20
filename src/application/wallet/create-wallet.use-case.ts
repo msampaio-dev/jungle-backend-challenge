@@ -5,6 +5,7 @@ import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { Money, type MoneyProps } from "../../domain/shared/money";
 import { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import { Wallet } from "../../domain/wallet/wallet";
+import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
@@ -36,21 +37,22 @@ export class CreateWalletUseCase {
     // eventos saírem iguais ao que o banco devolve (o tipo uuid sai minúsculo)
     const playerId = command.playerId.toLowerCase();
     const initialBalance = Money.from(command.initialBalance);
-    const now = new Date();
     const walletId = Bun.randomUUIDv7();
     const openingTransactionId = Bun.randomUUIDv7();
 
-    const { wallet, openingEntry } = Wallet.open({
-      id: walletId,
-      playerId,
-      initialBalance,
-      openingTransactionId,
-      openingEntryId: Bun.randomUUIDv7(),
-      at: now,
-    });
-
     try {
-      await this.orm.em.fork().transactional(async (em) => {
+      return await this.orm.em.fork().transactional(async (em) => {
+        // a wallet nasce já dentro da transação, com a data do relógio do banco
+        const now = await databaseNow(em);
+        const { wallet, openingEntry } = Wallet.open({
+          id: walletId,
+          playerId,
+          initialBalance,
+          openingTransactionId,
+          openingEntryId: Bun.randomUUIDv7(),
+          at: now,
+        });
+
         await this.wallets.insert(em, wallet);
         if (openingEntry) {
           const opening = WagerTransaction.opening({
@@ -69,6 +71,7 @@ export class CreateWalletUseCase {
             eventsForTransaction(opening, wallet, openingEntry, ctx).map((e) => OutboxMessage.enqueue(e)),
           );
         }
+        return wallet;
       });
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException && error.message.includes("wallets_player_currency_uq")) {
@@ -82,6 +85,5 @@ export class CreateWalletUseCase {
       }
       throw error;
     }
-    return wallet;
   }
 }

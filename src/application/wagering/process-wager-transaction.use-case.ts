@@ -17,6 +17,7 @@ import {
   referenceAttemptsExhausted,
 } from "../../domain/wagering/reference-retry-policy";
 import {
+  type CreateWagerTransactionProps,
   WagerTransaction,
   type WagerTransactionKind,
   type WagerTransactionStatus,
@@ -55,6 +56,11 @@ export interface WagerResult {
   failureCode?: FailureCode | undefined;
   /** só em PENDING_REFERENCE: quando a referência será procurada de novo (ISO-8601) */
   nextReferenceCheckAt?: string | undefined;
+  /**
+   * Só em PENDING_REFERENCE: segundos até a próxima checagem, calculados no
+   * relógio do banco (base do header Retry-After; não vai no corpo).
+   */
+  retryAfterSeconds?: number | undefined;
 }
 
 export interface ExecuteOptions {
@@ -64,6 +70,9 @@ export interface ExecuteOptions {
    */
   inTransaction?: (em: EntityManager) => Promise<void>;
 }
+
+/** Entrada já validada; vira WagerTransaction dentro da transação SQL, com a data do banco. */
+type PreparedWager = Omit<CreateWagerTransactionProps, "createdAt">;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_CONSTRAINTS = /wager_tx_idempotency_uq|wager_tx_external_id_uq/;
@@ -81,11 +90,11 @@ export class ProcessWagerTransactionUseCase {
     // Segunda volta só acontece se outra instância gravou a mesma chave entre
     // a nossa leitura e o nosso INSERT: aí a releitura vira replay ou conflito.
     for (let attempt = 1; ; attempt++) {
-      const tx = this.build(command);
+      const prepared = this.build(command);
       try {
-        const trace = { correlationId: tx.correlationId, causationId: command.causationId };
+        const trace = { correlationId: prepared.correlationId ?? prepared.id, causationId: command.causationId };
         return await this.orm.em.fork().transactional(async (em) => {
-          const result = await this.process(em, tx, trace);
+          const result = await this.process(em, prepared, trace);
           await options.inTransaction?.(em);
           return result;
         });
@@ -97,8 +106,11 @@ export class ProcessWagerTransactionUseCase {
     }
   }
 
-  /** Valida a entrada e calcula o hash. Erros aqui são payload inválido (nada é gravado). */
-  private build(command: SubmitWagerCommand): WagerTransaction {
+  /**
+   * Valida a entrada e calcula o hash, antes de abrir transação no banco.
+   * Erros aqui são payload inválido (nada é gravado). A data fica para depois.
+   */
+  private build(command: SubmitWagerCommand): PreparedWager {
     for (const field of ["playerId", "walletId"] as const) {
       if (typeof command[field] !== "string" || !UUID.test(command[field])) {
         throw new InvalidWagerTransactionError(`${field} must be a UUID`);
@@ -121,7 +133,7 @@ export class ProcessWagerTransactionUseCase {
       referenceExternalTransactionId: command.referenceExternalTransactionId,
     });
 
-    return WagerTransaction.create({
+    const prepared: PreparedWager = {
       id: Bun.randomUUIDv7(),
       providerId: command.providerId,
       externalTransactionId: command.externalTransactionId,
@@ -134,34 +146,39 @@ export class ProcessWagerTransactionUseCase {
       kind: command.kind as WagerTransactionKind,
       money,
       referenceExternalTransactionId: command.referenceExternalTransactionId,
-      createdAt: new Date(),
       correlationId: command.correlationId,
-    });
+    };
+    WagerTransaction.validate(prepared);
+    return prepared;
   }
 
   private async process(
     em: EntityManager,
-    tx: WagerTransaction,
+    prepared: PreparedWager,
     trace: Omit<EventContext, "occurredAt">,
   ): Promise<WagerResult> {
+    // a chegada é carimbada no relógio do banco, como todas as outras datas
+    const receivedAt = await databaseNow(em);
+
     // 1. Replay barato, sem lock.
-    const known = await this.transactions.findByIdempotencyKey(em, tx.providerId, tx.idempotencyKey);
-    if (known) return this.replay(em, known, tx);
+    const known = await this.transactions.findByIdempotencyKey(em, prepared.providerId, prepared.idempotencyKey);
+    if (known) return this.replay(em, known, prepared);
 
     // 2. Trava a carteira: tudo que toca esta wallet passa a ser serial.
-    const wallet = await this.wallets.lockById(em, tx.walletId);
-    if (!wallet) throw new WalletNotFoundError(`wallet ${tx.walletId} not found`);
+    const wallet = await this.wallets.lockById(em, prepared.walletId);
+    if (!wallet) throw new WalletNotFoundError(`wallet ${prepared.walletId} not found`);
 
     // 3. Confere de novo: outra requisição pode ter gravado enquanto esperávamos o lock.
-    const raced = await this.transactions.findByIdempotencyKey(em, tx.providerId, tx.idempotencyKey);
-    if (raced) return this.replay(em, raced, tx);
-    if (await this.transactions.findByExternalId(em, tx.providerId, tx.externalTransactionId)) {
+    const raced = await this.transactions.findByIdempotencyKey(em, prepared.providerId, prepared.idempotencyKey);
+    if (raced) return this.replay(em, raced, prepared);
+    if (await this.transactions.findByExternalId(em, prepared.providerId, prepared.externalTransactionId)) {
       throw new IdempotencyConflictError(
-        `externalTransactionId ${tx.externalTransactionId} was already submitted with another idempotency key`,
+        `externalTransactionId ${prepared.externalTransactionId} was already submitted with another idempotency key`,
       );
     }
 
-    // relógio do banco: a próxima checagem e o processed_at batem com now() do Postgres
+    const tx = WagerTransaction.create({ ...prepared, createdAt: receivedAt });
+    // hora de processar (depois de esperar o lock), também do banco
     const now = await databaseNow(em);
     const expectedVersion = wallet.version;
     const entry = await this.resolve(em, tx, wallet, now);
@@ -177,7 +194,7 @@ export class ProcessWagerTransactionUseCase {
       eventsForTransaction(tx, wallet, entry, { ...trace, occurredAt: now }).map((e) => OutboxMessage.enqueue(e)),
     );
 
-    return toResult(tx, wallet.balance, false);
+    return toResult(tx, wallet.balance, false, now);
   }
 
   /**
@@ -255,7 +272,7 @@ export class ProcessWagerTransactionUseCase {
     }
   }
 
-  private async replay(em: EntityManager, known: WagerTransaction, incoming: WagerTransaction): Promise<WagerResult> {
+  private async replay(em: EntityManager, known: WagerTransaction, incoming: PreparedWager): Promise<WagerResult> {
     if (!known.matchesPayload(incoming.payloadHash)) {
       throw new IdempotencyConflictError(
         `idempotency key ${incoming.idempotencyKey} was already used with a different payload`,
@@ -263,17 +280,23 @@ export class ProcessWagerTransactionUseCase {
     }
     // transação ainda pendente não tem saldo final: devolve o saldo atual
     const balance = known.resultBalance ?? (await this.wallets.findById(em, known.walletId))!.balance;
-    return toResult(known, balance, true);
+    return toResult(known, balance, true, await databaseNow(em));
   }
 }
 
-function toResult(tx: WagerTransaction, balance: Money, idempotentReplay: boolean): WagerResult {
+function toResult(tx: WagerTransaction, balance: Money, idempotentReplay: boolean, now: Date): WagerResult {
+  const next = tx.nextReferenceCheckAt;
   return {
     transactionId: tx.id,
     status: tx.status,
     balance: balance.toJSON(),
     idempotentReplay,
     ...(tx.failureCode ? { failureCode: tx.failureCode } : {}),
-    ...(tx.nextReferenceCheckAt ? { nextReferenceCheckAt: tx.nextReferenceCheckAt.toISOString() } : {}),
+    ...(next
+      ? {
+          nextReferenceCheckAt: next.toISOString(),
+          retryAfterSeconds: Math.max(1, Math.ceil((next.getTime() - now.getTime()) / 1000)),
+        }
+      : {}),
   };
 }

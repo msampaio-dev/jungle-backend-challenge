@@ -4,8 +4,10 @@ import type { EventPublisher } from "../../src/application/outbox/event-publishe
 import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
+import { SqsWagerConsumer } from "../../src/infrastructure/messaging/sqs-wager-consumer";
 import { createTestOrm } from "./support/database";
 import { command, createWallet } from "./support/fixtures";
+import { createTestQueue } from "./support/sqs";
 
 /**
  * Relógio da aplicação diferente do relógio do banco, como acontece entre
@@ -96,3 +98,56 @@ test("app adiantada 1h: eventos de abertura de wallet saem na hora, não 1h depo
   const [row] = await sql("select count(*)::int as n from outbox_messages where aggregate_id = ? and published_at is null", [w.walletId]);
   expect(row!.n).toBe(0);
 });
+
+test("app adiantada 1h: toda data gravada vem do relógio do banco", async () => {
+  const useCase = new ProcessWagerTransactionUseCase(orm);
+  const worker = new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
+  const dlq = await createTestQueue("skew-dlq");
+  const main = await createTestQueue("skew-main");
+  const consumer = new SqsWagerConsumer(main.client, orm, useCase, {
+    queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "skew", waitTimeSeconds: 1,
+    maxAttempts: 3, backoffBaseSeconds: 0, backoffMaxSeconds: 0,
+  });
+
+  setSystemTime(new Date(Date.now() + HOUR));
+
+  const w = await createWallet(orm, "100.00"); // wallet, OPENING, lançamento e eventos de abertura
+  await useCase.execute(command(w, { amount: "10.00" })); // aposta pela API
+  const refund = await useCase.execute(command(w, { kind: "REFUND", amount: "20.00", referenceExternalTransactionId: "bet-tarde" }));
+  await useCase.execute(command(w, { amount: "20.00", externalTransactionId: "bet-tarde" })); // acorda a pendente
+  await worker.runOnce(); // resolve a pendente
+  const { idempotencyKey, ...data } = command(w, { amount: "5.00" });
+  await main.send({ messageId: "msg-skew", type: "WagerTransactionRequested", data: { ...data, idempotencyKey } }, w.walletId);
+  await consumer.pollOnce(); // aposta pelo SQS, com inbox
+  await new OutboxRelay(orm, { publish: async () => {} }).publishBatch(); // published_at
+
+  const [resolved] = await sql("select status from wager_transactions where id = ?", [refund.transactionId]);
+  expect(resolved!.status).toBe("PROCESSED");
+
+  const columns: Array<[string, string, string]> = [
+    ["wallets", "created_at", "id = ?"],
+    ["wallets", "updated_at", "id = ?"],
+    ["wager_transactions", "created_at", "wallet_id = ?"],
+    ["wager_transactions", "processed_at", "wallet_id = ?"],
+    ["wager_transactions", "updated_at", "wallet_id = ?"],
+    ["wallet_ledger_entries", "created_at", "wallet_id = ?"],
+    ["outbox_messages", "occurred_at", "aggregate_id = ?"],
+    ["outbox_messages", "published_at", "aggregate_id = ?"],
+    ["inbox_messages", "received_at", "message_id = 'msg-skew' and ? is not null"],
+    ["inbox_messages", "processed_at", "message_id = 'msg-skew' and ? is not null"],
+  ];
+  const offenders: string[] = [];
+  for (const [table, column, where] of columns) {
+    const [row] = await sql(
+      `select count(${column})::int as n,
+              coalesce(max(abs(extract(epoch from ${column} - clock_timestamp()))), 0) as worst
+         from ${table} where ${where}`,
+      [w.walletId],
+    );
+    if (Number(row!.n) === 0) offenders.push(`${table}.${column}: nenhuma linha`);
+    else if (Number(row!.worst) > 60) offenders.push(`${table}.${column}: ${Math.round(Number(row!.worst))}s fora`);
+  }
+  expect(offenders).toEqual([]);
+  await main.delete();
+  await dlq.delete();
+}, 60_000);

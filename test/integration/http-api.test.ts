@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { startTestApi, type TestApi } from "./support/http";
 
 let api: TestApi;
@@ -124,6 +124,18 @@ describe("POST /wagering/transactions — status", () => {
 
     const view = await api.call("GET", `/wagering/transactions/${res.body.transactionId}`);
     expect(view.body).toMatchObject({ referenceAttempts: 1, nextReferenceCheckAt: res.body.nextReferenceCheckAt });
+  });
+
+  test("Retry-After usa o relógio do banco: app atrasada 1h não manda esperar 1h", async () => {
+    const w = await newWallet();
+    setSystemTime(new Date(Date.now() - 60 * 60 * 1000));
+    try {
+      const res = await wager(w, { kind: "REFUND", referenceExternalTransactionId: "nao-chegou-skew" }).send();
+      expect(res.status).toBe(202);
+      expect(Number(res.headers.get("retry-after"))).toBeLessThanOrEqual(2);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("transação resolvida não anuncia próxima checagem", async () => {

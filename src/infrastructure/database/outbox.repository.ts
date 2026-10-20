@@ -51,11 +51,12 @@ export class OutboxRepository {
   }
 
   async save(em: EntityManager, message: OutboxMessage, lastError?: string): Promise<void> {
+    // sem nova data agendada, mantém a que está no banco (nada de relógio da máquina)
     await em.execute(
       `update outbox_messages
-          set attempts = ?, next_attempt_at = ?, published_at = ?, last_error = ?
+          set attempts = ?, next_attempt_at = coalesce(?, next_attempt_at), published_at = ?, last_error = ?
         where id = ?`,
-      [message.attempts, message.nextAttemptAt ?? new Date(), message.publishedAt ?? null, lastError ?? null, message.id],
+      [message.attempts, message.nextAttemptAt ?? null, message.publishedAt ?? null, lastError ?? null, message.id],
     );
   }
 }

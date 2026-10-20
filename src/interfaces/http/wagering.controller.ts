@@ -26,13 +26,10 @@ export class WageringController {
   ): Promise<WagerResult> {
     if (!idempotencyKey?.trim()) throw new InvalidRequestError("Idempotency-Key header is required");
 
-    const result = await this.processWager.execute(toCommand(idempotencyKey, body));
+    const { retryAfterSeconds, ...result } = await this.processWager.execute(toCommand(idempotencyKey, body));
     response.status(statusFor(result));
-    if (result.nextReferenceCheckAt) {
-      // 202: quando vale a pena consultar de novo (segundos, no mínimo 1)
-      const seconds = Math.ceil((Date.parse(result.nextReferenceCheckAt) - Date.now()) / 1000);
-      response.setHeader("Retry-After", String(Math.max(1, seconds)));
-    }
+    // 202: quando vale a pena consultar de novo, já calculado no relógio do banco
+    if (retryAfterSeconds !== undefined) response.setHeader("Retry-After", String(retryAfterSeconds));
     return result;
   }
 

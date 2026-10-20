@@ -18,6 +18,7 @@ import type {
 import { payloadHash } from "../../application/wagering/payload-hash";
 import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
+import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
 
 export interface SqsConsumerOptions {
@@ -175,16 +176,19 @@ export class SqsWagerConsumer {
 
     let result: WagerResult;
     try {
-      const inboxMessage = InboxMessage.receive({
-        messageId: envelope.messageId,
-        consumerName: this.options.consumerName,
-        payloadHash: hash,
-        receivedAt: new Date(),
-      });
-      inboxMessage.markProcessed(new Date());
-
       result = await this.useCase.execute(toCommand(envelope), {
-        inTransaction: (em) => this.inbox.insert(em, inboxMessage),
+        // dentro da transação da operação, com a data do relógio do banco
+        inTransaction: async (em) => {
+          const now = await databaseNow(em);
+          const inboxMessage = InboxMessage.receive({
+            messageId: envelope.messageId,
+            consumerName: this.options.consumerName,
+            payloadHash: hash,
+            receivedAt: now,
+          });
+          inboxMessage.markProcessed(now);
+          await this.inbox.insert(em, inboxMessage);
+        },
       });
     } catch (error) {
       // outra instância processou a mesma mensagem ao mesmo tempo e confirmou primeiro

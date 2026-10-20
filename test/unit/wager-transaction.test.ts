@@ -75,6 +75,25 @@ describe("WagerTransaction.create", () => {
     expect(plain.correlationId).toBe(plain.id);
   });
 
+  test("validate recusa a entrada sem precisar de data (antes de abrir transação no banco)", () => {
+    const props = {
+      id: "tx-v",
+      providerId: "provider-a",
+      externalTransactionId: "ext-v",
+      idempotencyKey: "provider-a:ext-v",
+      payloadHash: "hash",
+      walletId: "wallet-1",
+      playerId: "player-1",
+      roundId: "round-1",
+      gameId: "fortune-chimp",
+      kind: Kind.Bet,
+      money: brl("25.00"),
+    };
+    expect(() => WagerTransaction.validate(props)).not.toThrow();
+    expect(() => WagerTransaction.validate({ ...props, kind: Kind.Opening })).toThrow(InvalidWagerTransactionError);
+    expect(() => WagerTransaction.validate({ ...props, kind: Kind.Refund })).toThrow(/requires referenceExternalTransactionId/);
+  });
+
   test("campos obrigatórios vazios são recusados", () => {
     expect(() => tx({ roundId: " " })).toThrow(/roundId is required/);
     expect(() => tx({ providerId: "" })).toThrow(/providerId is required/);

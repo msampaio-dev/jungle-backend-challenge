@@ -112,6 +112,38 @@ export class WagerTransaction {
 
   /** Nasce em PENDING. Valida a forma da transação vinda de um provedor. */
   static create(props: CreateWagerTransactionProps): WagerTransaction {
+    WagerTransaction.validate(props);
+    return new WagerTransaction(
+      props.id,
+      props.providerId,
+      props.externalTransactionId,
+      props.idempotencyKey,
+      props.payloadHash,
+      props.walletId,
+      props.playerId,
+      props.roundId,
+      props.gameId,
+      props.kind,
+      props.money,
+      props.referenceExternalTransactionId,
+      props.createdAt,
+      WagerTransactionStatus.Pending,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+      undefined,
+      props.correlationId,
+    );
+  }
+
+  /**
+   * As mesmas regras do create, sem precisar da data: permite recusar um
+   * payload inválido antes de abrir transação no banco, e só carimbar a data
+   * (relógio do banco) depois, já dentro dela.
+   */
+  static validate(props: Omit<CreateWagerTransactionProps, "createdAt">): void {
     const { kind, money, referenceExternalTransactionId: reference } = props;
 
     if (kind === WagerTransactionKind.Opening) {
@@ -149,30 +181,6 @@ export class WagerTransaction {
     if (kind === WagerTransactionKind.Loss ? money.isNegative() : !money.isPositive()) {
       throw new InvalidWagerTransactionError(`invalid amount ${money} for ${kind}`);
     }
-
-    return new WagerTransaction(
-      props.id,
-      props.providerId,
-      props.externalTransactionId,
-      props.idempotencyKey,
-      props.payloadHash,
-      props.walletId,
-      props.playerId,
-      props.roundId,
-      props.gameId,
-      kind,
-      money,
-      reference,
-      props.createdAt,
-      WagerTransactionStatus.Pending,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      0,
-      undefined,
-      props.correlationId,
-    );
   }
 
   /** Crédito interno de abertura da wallet, já processado. */
