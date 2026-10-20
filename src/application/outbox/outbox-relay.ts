@@ -47,7 +47,6 @@ export class OutboxRelay {
           await this.outbox.save(em, message);
           result.published++;
         } catch (error) {
-          // falha de publicação não derruba o lote: agenda nova tentativa
           message.scheduleRetry(new Date());
           await this.outbox.save(em, message, (error as Error).message);
           result.failed++;
@@ -57,6 +56,10 @@ export class OutboxRelay {
             attempts: message.attempts,
             nextAttemptAt: message.nextAttemptAt,
           });
+          // Provavelmente o SQS está fora: insistir no resto do lote só manteria
+          // a transação e os locks abertos (até lote x timeout). O resto fica
+          // pendente, sem gastar tentativa, e sai na próxima rodada.
+          break;
         }
       }
       return result;

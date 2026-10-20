@@ -132,6 +132,25 @@ describe("relay", () => {
     expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(1);
   });
 
+  test("SQS fora do ar: o lote para na primeira falha em vez de insistir em todos", async () => {
+    await publishEverything();
+    const w = await createWallet(orm, "0.00");
+    for (let i = 0; i < 5; i++) await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+
+    let calls = 0;
+    const down: EventPublisher = { publish: async () => { calls++; throw new Error("sqs down"); } };
+    expect(await new OutboxRelay(orm, down).publishBatch()).toEqual({ published: 0, failed: 1 });
+    expect(calls).toBe(1);
+
+    const attempts = (await sql("select attempts from outbox_messages where aggregate_id = ? order by occurred_at, id", [w.walletId])).map((r) => r.attempts);
+    expect(attempts).toEqual([1, 0, 0, 0, 0]); // os outros não gastaram tentativa
+    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(4); // e saem na próxima rodada
+
+    // o que falhou também sai depois do backoff (e a outbox fica limpa para os próximos testes)
+    await sql("update outbox_messages set next_attempt_at = now() where aggregate_id = ? and published_at is null", [w.walletId]);
+    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(1);
+  });
+
   test("dois publicadores na mesma outbox: cada evento sai uma vez", async () => {
     await publishEverything();
     const wallets = await Promise.all(Array.from({ length: 10 }, () => createWallet(orm, "100.00")));
