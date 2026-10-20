@@ -54,6 +54,7 @@ export class WagerTransactionRepository {
       amount: tx.money.toJSON().amount,
       currency: tx.money.currency,
       referenceExternalTransactionId: tx.referenceExternalTransactionId ?? null,
+      correlationId: tx.correlationId,
       createdAt: tx.createdAt,
       ...this.mutableFields(tx, now),
     });
@@ -149,5 +150,6 @@ function toWagerTransaction(r: WagerTransactionRecord): WagerTransaction {
     processedAt: r.processedAt ?? undefined,
     referenceAttempts: r.attempts,
     nextReferenceCheckAt: r.nextAttemptAt ?? undefined,
+    correlationId: r.correlationId ?? undefined,
   });
 }

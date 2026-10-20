@@ -103,8 +103,8 @@ export class PendingReferenceWorker {
 
       if (!tx.isTerminal()) return "rescheduled"; // reagendamento não gera evento
 
-      // A origem da requisição não é guardada: o próprio id vira correlationId.
-      const ctx = { correlationId: tx.id, occurredAt: now };
+      // eventos da resolução continuam o rastro da requisição original
+      const ctx = { correlationId: tx.correlationId, occurredAt: now };
       await this.outbox.insert(
         em,
         eventsForTransaction(tx, wallet, entry, ctx).map((e) => OutboxMessage.enqueue(e)),
@@ -152,7 +152,7 @@ export class PendingReferenceWorker {
       await this.transactions.update(em, tx, now);
       await this.outbox.insert(
         em,
-        eventsForTransaction(tx, wallet, undefined, { correlationId: tx.id, occurredAt: now }).map((e) =>
+        eventsForTransaction(tx, wallet, undefined, { correlationId: tx.correlationId, occurredAt: now }).map((e) =>
           OutboxMessage.enqueue(e),
         ),
       );

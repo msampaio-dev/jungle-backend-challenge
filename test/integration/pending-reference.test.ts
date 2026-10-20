@@ -219,4 +219,24 @@ describe("worker de PENDING_REFERENCE", () => {
     }
     expect(await txRow(refund.transactionId)).toMatchObject({ status: "PENDING_REFERENCE", resolution_failures: 0 });
   });
+
+  test("eventos da resolução carregam o correlationId da requisição original", async () => {
+    const { run, worker } = setup();
+    const w = await createWallet(orm, "100.00");
+    const refund = await run({ ...refundOf(w, "bet-rastro"), correlationId: "corr-abc-123" });
+    await run(command(w, { amount: "30.00", externalTransactionId: "bet-rastro" }));
+
+    await makeDue(refund.transactionId);
+    await worker().runOnce();
+
+    const correlations = await sql(
+      "select event_type, payload->>'correlationId' as correlation_id from outbox_messages where payload->'data'->>'transactionId' = ? order by event_type",
+      [refund.transactionId],
+    );
+    expect(correlations).toEqual([
+      { event_type: "WagerTransactionPendingReference", correlation_id: "corr-abc-123" },
+      { event_type: "WagerTransactionProcessed", correlation_id: "corr-abc-123" },
+      { event_type: "WalletBalanceChanged", correlation_id: "corr-abc-123" },
+    ]);
+  });
 });

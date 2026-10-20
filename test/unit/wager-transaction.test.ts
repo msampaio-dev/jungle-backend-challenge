@@ -69,12 +69,18 @@ describe("WagerTransaction.create", () => {
     expect(() => tx({ kind: Kind.Win, money: brl("0.00") })).toThrow(InvalidWagerTransactionError);
   });
 
+  test("correlationId vem da requisição; sem ele, vale o próprio id", () => {
+    expect(tx({ correlationId: "corr-1" }).correlationId).toBe("corr-1");
+    const plain = tx();
+    expect(plain.correlationId).toBe(plain.id);
+  });
+
   test("campos obrigatórios vazios são recusados", () => {
     expect(() => tx({ roundId: " " })).toThrow(/roundId is required/);
     expect(() => tx({ providerId: "" })).toThrow(/providerId is required/);
   });
 
-  test.each(["providerId", "externalTransactionId", "idempotencyKey", "roundId", "gameId", "referenceExternalTransactionId"])(
+  test.each(["providerId", "externalTransactionId", "idempotencyKey", "roundId", "gameId", "referenceExternalTransactionId", "correlationId"])(
     "%s com mais de 255 caracteres é recusado",
     (field) => {
       // só REFUND aceita (e exige) referência; os outros campos são testados numa BET simples

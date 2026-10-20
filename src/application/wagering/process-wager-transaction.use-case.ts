@@ -80,7 +80,7 @@ export class ProcessWagerTransactionUseCase {
     for (let attempt = 1; ; attempt++) {
       const tx = this.build(command);
       try {
-        const trace = { correlationId: command.correlationId ?? tx.id, causationId: command.causationId };
+        const trace = { correlationId: tx.correlationId, causationId: command.causationId };
         return await this.orm.em.fork().transactional(async (em) => {
           const result = await this.process(em, tx, trace);
           await options.inTransaction?.(em);
@@ -132,6 +132,7 @@ export class ProcessWagerTransactionUseCase {
       money,
       referenceExternalTransactionId: command.referenceExternalTransactionId,
       createdAt: new Date(),
+      correlationId: command.correlationId,
     });
   }
 

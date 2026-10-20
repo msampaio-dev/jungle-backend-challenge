@@ -10,6 +10,7 @@ import { Migration20261020040000IdentifierLength } from "./migrations/Migration2
 import { Migration20261020050000LedgerTransactionWallet } from "./migrations/Migration20261020050000LedgerTransactionWallet";
 import { Migration20261020060000PendingReferenceSchedule } from "./migrations/Migration20261020060000PendingReferenceSchedule";
 import { Migration20261020070000ResolutionFailures } from "./migrations/Migration20261020070000ResolutionFailures";
+import { Migration20261020080000CorrelationId } from "./migrations/Migration20261020080000CorrelationId";
 
 export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
   return defineConfig({
@@ -30,6 +31,7 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
         { name: "Migration20261020050000LedgerTransactionWallet", class: Migration20261020050000LedgerTransactionWallet },
         { name: "Migration20261020060000PendingReferenceSchedule", class: Migration20261020060000PendingReferenceSchedule },
         { name: "Migration20261020070000ResolutionFailures", class: Migration20261020070000ResolutionFailures },
+        { name: "Migration20261020080000CorrelationId", class: Migration20261020080000CorrelationId },
       ],
       transactional: true,
       allOrNothing: true,

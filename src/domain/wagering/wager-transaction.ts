@@ -47,6 +47,8 @@ export interface CreateWagerTransactionProps {
   money: Money;
   referenceExternalTransactionId?: string | undefined;
   createdAt: Date;
+  /** rastreio da requisição de origem; sem ele, vale o próprio id */
+  correlationId?: string | undefined;
 }
 
 export interface WagerTransactionState extends Omit<CreateWagerTransactionProps, "roundId" | "gameId"> {
@@ -105,6 +107,7 @@ export class WagerTransaction {
     /** tentativas de resolver a referência (a da chegada conta como a primeira) */
     private _referenceAttempts = 0,
     private _nextReferenceCheckAt?: Date,
+    private readonly _correlationId?: string,
   ) {}
 
   /** Nasce em PENDING. Valida a forma da transação vinda de um provedor. */
@@ -129,6 +132,7 @@ export class WagerTransaction {
       "roundId",
       "gameId",
       "referenceExternalTransactionId",
+      "correlationId",
     ] as const) {
       const value = props[field];
       if (typeof value === "string" && value.length > MAX_IDENTIFIER_LENGTH) {
@@ -161,6 +165,13 @@ export class WagerTransaction {
       reference,
       props.createdAt,
       WagerTransactionStatus.Pending,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      0,
+      undefined,
+      props.correlationId,
     );
   }
 
@@ -209,6 +220,7 @@ export class WagerTransaction {
       state.processedAt,
       state.referenceAttempts,
       state.nextReferenceCheckAt,
+      state.correlationId,
     );
   }
 
@@ -231,6 +243,11 @@ export class WagerTransaction {
 
   get processedAt(): Date | undefined {
     return this._processedAt;
+  }
+
+  /** Rastreio da requisição que criou a transação (ou o próprio id). */
+  get correlationId(): string {
+    return this._correlationId ?? this.id;
   }
 
   get referenceAttempts(): number {
