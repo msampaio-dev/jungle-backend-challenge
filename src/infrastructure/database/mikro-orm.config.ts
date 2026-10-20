@@ -5,6 +5,7 @@ import { Migration20261019230000WalletsAndLedger } from "./migrations/Migration2
 import { Migration20261020000000WagerTransactions } from "./migrations/Migration20261020000000WagerTransactions";
 import { Migration20261020010000Outbox } from "./migrations/Migration20261020010000Outbox";
 import { Migration20261020020000Inbox } from "./migrations/Migration20261020020000Inbox";
+import { Migration20261020030000SingleReversal } from "./migrations/Migration20261020030000SingleReversal";
 
 export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
   return defineConfig({
@@ -20,6 +21,7 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
         { name: "Migration20261020000000WagerTransactions", class: Migration20261020000000WagerTransactions },
         { name: "Migration20261020010000Outbox", class: Migration20261020010000Outbox },
         { name: "Migration20261020020000Inbox", class: Migration20261020020000Inbox },
+        { name: "Migration20261020030000SingleReversal", class: Migration20261020030000SingleReversal },
       ],
       transactional: true,
       allOrNothing: true,

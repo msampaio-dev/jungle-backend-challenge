@@ -186,20 +186,23 @@ describe("wager_transactions", () => {
     await expect(sql("delete from wager_transactions")).rejects.toThrow(/append-only/);
   });
 
-  test("a mesma referência só pode ser revertida uma vez por tipo", async () => {
+  test.each([
+    ["REFUND", "REFUND"],
+    ["REFUND", "ROLLBACK"],
+  ])("a mesma referência só pode ser revertida uma vez (%s e depois %s)", async (firstKind, secondKind) => {
     const now = new Date().toISOString();
     const bet = crypto.randomUUID();
     await insertTransaction(bet, { status: "PROCESSED", processed_at: now });
-    const refund = (id: string) =>
-      insertTransaction(id, {
-        kind: "REFUND",
+    const reversal = (kind: string) =>
+      insertTransaction(crypto.randomUUID(), {
+        kind,
         reference_external_transaction_id: bet,
         reference_transaction_id: bet,
         status: "PROCESSED",
         processed_at: now,
       });
 
-    await refund(crypto.randomUUID());
-    await expect(refund(crypto.randomUUID())).rejects.toThrow(/wager_tx_one_reversal_per_reference_uq/);
+    await reversal(firstKind);
+    await expect(reversal(secondKind)).rejects.toThrow(/wager_tx_single_reversal_uq/);
   });
 });

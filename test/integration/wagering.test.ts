@@ -180,6 +180,23 @@ describe("regras de negócio", () => {
     expect(again).toMatchObject({ status: "REJECTED", failureCode: "REFERENCE_ALREADY_REVERSED" });
   });
 
+  test.each([
+    ["REFUND", "ROLLBACK"],
+    ["ROLLBACK", "REFUND"],
+  ])("%s e depois %s da mesma BET: só a primeira reversão vale", async (firstKind, secondKind) => {
+    const w = await wallet();
+    const bet = command(w, { amount: "30.00" });
+    await run(bet);
+    const ref = { amount: "30.00", referenceExternalTransactionId: bet.externalTransactionId };
+
+    const first = await run(command(w, { kind: firstKind, ...ref }));
+    const second = await run(command(w, { kind: secondKind, ...ref }));
+
+    expect(first).toMatchObject({ status: "PROCESSED", balance: { amount: "100.00" } });
+    expect(second).toMatchObject({ status: "REJECTED", failureCode: "REFERENCE_ALREADY_REVERSED" });
+    expect((await snapshot(orm, w.walletId)).balance).toBe("100.00");
+  });
+
   test("REFUND com valor diferente da BET é rejeitado", async () => {
     const w = await wallet();
     const bet = command(w, { amount: "30.00" });

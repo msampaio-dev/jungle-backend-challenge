@@ -29,15 +29,11 @@ export class WagerTransactionRepository {
     return this.findOne(em, { providerId, externalTransactionId });
   }
 
-  /** Já existe reversão processada deste tipo para a referência? */
-  async hasProcessedReversal(
-    em: EntityManager,
-    referenceTransactionId: string,
-    kind: WagerTransactionKind,
-  ): Promise<boolean> {
+  /** A referência já foi revertida (por REFUND ou ROLLBACK, tanto faz)? */
+  async hasProcessedReversal(em: EntityManager, referenceTransactionId: string): Promise<boolean> {
     const count = await em.count(WagerTransactionRecord, {
       referenceTransactionId,
-      kind,
+      kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
       status: WagerTransactionStatus.Processed,
     });
     return count > 0;
