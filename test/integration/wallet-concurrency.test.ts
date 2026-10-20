@@ -4,6 +4,8 @@ import { Money } from "../../src/domain/shared/money";
 import { WagerTransaction, WagerTransactionKind } from "../../src/domain/wagering/wager-transaction";
 import { WagerTransactionRepository } from "../../src/infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../src/infrastructure/database/wallet.repository";
+import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
+import { classifyError, ErrorKind } from "../../src/application/error-kind";
 import { createTestOrm } from "./support/database";
 import { command, createWallet, processor, snapshot } from "./support/fixtures";
 
@@ -105,5 +107,43 @@ describe("proteção extra da version", () => {
     const state = await snapshot(orm, wallet.walletId);
     expect(state.balance).toBe("100.00");
     expect(state.debits).toBe(0);
+  });
+});
+
+describe("espera pelo lock da wallet", () => {
+  test("espera longa desiste com erro transitório (503 / retry) em vez de pendurar", async () => {
+    const wallet = await createWallet(orm, "100.00");
+    const impatient = new ProcessWagerTransactionUseCase(orm, new WalletRepository(300));
+
+    // outra transação segura o lock da wallet por 1,5s
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const isLocked = new Promise<void>((resolve) => (locked = resolve));
+    const holder = orm.em.fork().transactional(async (em) => {
+      await new WalletRepository().lockById(em, wallet.walletId);
+      locked();
+      await held;
+    });
+    await isLocked;
+    setTimeout(release, 1_500);
+
+    const started = performance.now();
+    const error = await impatient.execute(command(wallet, { amount: "10.00", externalTransactionId: "lock-1" })).catch((e) => e);
+    const waitedMs = performance.now() - started;
+
+    expect(classifyError(error)).toBe(ErrorKind.Transient);
+    expect(waitedMs).toBeLessThan(1_200);
+    await holder;
+
+    // liberado o lock, a mesma requisição passa (nada ficou gravado pela metade)
+    const retry = await impatient.execute(command(wallet, { amount: "10.00", externalTransactionId: "lock-1" }));
+    expect(retry).toMatchObject({ status: "PROCESSED", idempotentReplay: false });
+    expect((await snapshot(orm, wallet.walletId)).debits).toBe(1);
+  });
+
+  test("limite de espera inválido é recusado na configuração", () => {
+    expect(() => new WalletRepository(0)).toThrow();
+    expect(() => new WalletRepository(1.5)).toThrow();
   });
 });

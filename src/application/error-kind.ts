@@ -35,8 +35,24 @@ export enum ErrorKind {
   Unexpected = "UNEXPECTED",
 }
 
-// erros de rede do driver pg que não chegam embrulhados pelo ORM
-const TRANSIENT_NETWORK_CODES = new Set(["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "57P01", "57P03", "53300"]);
+/**
+ * Códigos que indicam "tente de novo": rede do driver pg e códigos SQL que
+ * o MikroORM não converte em tipo próprio (ele não mapeia 55P03, por exemplo).
+ *  - 55P03 lock_not_available: estourou o lock_timeout esperando a wallet
+ *  - 40001 serialization_failure: conflito de concorrência
+ *  - 57P01/57P03/53300: banco reiniciando, subindo ou sem conexões livres
+ */
+const TRANSIENT_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "ETIMEDOUT",
+  "EPIPE",
+  "55P03",
+  "40001",
+  "57P01",
+  "57P03",
+  "53300",
+]);
 
 export function classifyError(error: unknown): ErrorKind {
   if (
@@ -57,7 +73,7 @@ export function classifyError(error: unknown): ErrorKind {
     return ErrorKind.Transient;
   }
   const code = (error as { code?: unknown } | null)?.code;
-  if (typeof code === "string" && TRANSIENT_NETWORK_CODES.has(code)) return ErrorKind.Transient;
+  if (typeof code === "string" && TRANSIENT_CODES.has(code)) return ErrorKind.Transient;
   return ErrorKind.Unexpected;
 }
 

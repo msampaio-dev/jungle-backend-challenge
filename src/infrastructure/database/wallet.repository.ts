@@ -17,7 +17,17 @@ export class StaleWalletVersionError extends Error {
   }
 }
 
+/** Quanto uma transação espera pelo lock de uma wallet antes de desistir. */
+const DEFAULT_LOCK_TIMEOUT_MS = Number(process.env.WALLET_LOCK_TIMEOUT_MS ?? 5_000);
+
 export class WalletRepository {
+  constructor(private readonly lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS) {
+    // vai direto num SET (que não aceita parâmetro): só inteiro positivo passa
+    if (!Number.isInteger(lockTimeoutMs) || lockTimeoutMs <= 0) {
+      throw new Error(`invalid wallet lock timeout: ${lockTimeoutMs}`);
+    }
+  }
+
   async findById(em: EntityManager, id: string): Promise<Wallet | null> {
     const record = await em.findOne(WalletRecord, { id });
     return record ? toWallet(record) : null;
@@ -27,8 +37,14 @@ export class WalletRepository {
    * SELECT ... FOR UPDATE na linha da carteira. Precisa rodar dentro de
    * uma transação: o lock vale até o commit/rollback e só trava esta
    * carteira, então carteiras diferentes seguem em paralelo.
+   *
+   * lock_timeout: sem ele, uma requisição podia esperar o lock para sempre
+   * atrás de uma transação travada. Passado o limite, o Postgres desiste
+   * (55P03), o que vira erro transitório: 503 na API, retry no SQS.
+   * SET LOCAL vale só até o fim desta transação.
    */
   async lockById(em: EntityManager, id: string): Promise<Wallet | null> {
+    await em.execute(`set local lock_timeout = ${this.lockTimeoutMs}`);
     const record = await em.findOne(
       WalletRecord,
       { id },
