@@ -1,5 +1,10 @@
 import { Money } from "../shared/money";
-import { CurrencyMismatchError, InsufficientFundsError, InvalidMoneyError } from "../shared/domain-error";
+import {
+  BalanceLimitExceededError,
+  CurrencyMismatchError,
+  InsufficientFundsError,
+  InvalidMoneyError,
+} from "../shared/domain-error";
 import { LedgerDirection, WalletLedgerEntry } from "./wallet-ledger-entry";
 
 export interface WalletState {
@@ -118,6 +123,9 @@ export class Wallet {
   private apply(direction: LedgerDirection, money: Money, ctx: MovementContext): WalletLedgerEntry {
     const before = this._balance;
     const after = direction === LedgerDirection.Credit ? before.add(money) : before.subtract(money);
+    if (after.exceedsMaximum()) {
+      throw new BalanceLimitExceededError(`balance ${before} + ${money} exceeds the storable maximum`);
+    }
 
     const entry = WalletLedgerEntry.create({
       id: ctx.entryId,

@@ -12,6 +12,8 @@ export interface MoneyProps {
 const AMOUNT_PATTERN = /^(0|[1-9]\d{0,15})(?:\.(\d{1,2}))?$/;
 const CURRENCY_PATTERN = /^[A-Z]{3}$/;
 const SCALE = 100n;
+/** 9999999999999999.99: o maior valor que cabe em NUMERIC(18,2). */
+const MAX_MINOR = 10n ** 18n - 1n;
 
 /**
  * Valor monetário imutável. Guarda o valor em centavos como bigint:
@@ -72,6 +74,11 @@ export class Money {
 
   isNegative(): boolean {
     return this.minor < 0n;
+  }
+
+  /** Passa do maior valor armazenável? Soma de valores válidos pode passar. */
+  exceedsMaximum(): boolean {
+    return this.minor > MAX_MINOR || this.minor < -MAX_MINOR;
   }
 
   isLessThan(other: Money): boolean {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Money } from "../../src/domain/shared/money";
 import {
+  BalanceLimitExceededError,
   CurrencyMismatchError,
   InsufficientFundsError,
   InvalidMoneyError,
@@ -122,6 +123,13 @@ describe("Wallet.debit", () => {
 });
 
 describe("Wallet.credit", () => {
+  test("crédito que passaria do maior saldo armazenável é recusado sem mexer na wallet", () => {
+    const wallet = openWallet("9999999999999999.99");
+    expect(() => wallet.credit(brl("0.01"), ctx())).toThrow(BalanceLimitExceededError);
+    expect(wallet.balance.toJSON().amount).toBe("9999999999999999.99");
+    expect(wallet.version).toBe(1);
+  });
+
   test("credita, gera lançamento CREDIT e incrementa version", () => {
     const wallet = openWallet("100.00");
     const entry = wallet.credit(brl("50.00"), ctx());

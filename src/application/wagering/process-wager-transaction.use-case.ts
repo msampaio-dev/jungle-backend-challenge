@@ -3,7 +3,11 @@ import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import type { EventContext } from "../../domain/messaging/integration-event";
 import { OutboxMessage } from "../../domain/messaging/outbox-message";
 import { eventsForTransaction } from "../../domain/messaging/wagering-events";
-import { InsufficientFundsError, InvalidWagerTransactionError } from "../../domain/shared/domain-error";
+import {
+  BalanceLimitExceededError,
+  InsufficientFundsError,
+  InvalidWagerTransactionError,
+} from "../../domain/shared/domain-error";
 import { Money, type MoneyProps } from "../../domain/shared/money";
 import { FailureCode } from "../../domain/wagering/failure-code";
 import {
@@ -218,6 +222,10 @@ export class ProcessWagerTransactionUseCase {
       tx.markProcessed(reference?.id, now, wallet.balance);
       return entry;
     } catch (error) {
+      if (error instanceof BalanceLimitExceededError) {
+        tx.reject(FailureCode.BalanceLimitExceeded, wallet.balance);
+        return undefined;
+      }
       if (!(error instanceof InsufficientFundsError)) throw error;
       // estornar um WIN já gasto é diferente de apostar sem saldo
       const code = tx.requiresReference() ? FailureCode.ReversalInsufficientFunds : FailureCode.InsufficientFunds;

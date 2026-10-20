@@ -5,6 +5,7 @@
 export enum FailureCode {
   // regra de negócio: reenviar o mesmo payload não muda o resultado
   InsufficientFunds = "INSUFFICIENT_FUNDS",
+  BalanceLimitExceeded = "BALANCE_LIMIT_EXCEEDED",
   ReversalInsufficientFunds = "REVERSAL_INSUFFICIENT_FUNDS",
   CurrencyMismatch = "CURRENCY_MISMATCH",
   PlayerWalletMismatch = "PLAYER_WALLET_MISMATCH",

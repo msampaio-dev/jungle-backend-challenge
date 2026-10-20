@@ -144,6 +144,13 @@ describe("regras de negócio", () => {
     expect(result).toMatchObject({ status: "PROCESSED", balance: { amount: "140.00" } });
   });
 
+  test("WIN que passaria do maior saldo armazenável é rejeitado, não vira erro 500", async () => {
+    const w = await wallet("9999999999999999.99");
+    const result = await run(command(w, { kind: "WIN", amount: "0.01" }));
+    expect(result).toMatchObject({ status: "REJECTED", failureCode: "BALANCE_LIMIT_EXCEEDED" });
+    expect((await snapshot(orm, w.walletId)).balance).toBe("9999999999999999.99");
+  });
+
   test("LOSS é processado sem mexer no saldo nem no ledger", async () => {
     const w = await wallet();
     const result = await run(command(w, { kind: "LOSS", amount: "0.00" }));

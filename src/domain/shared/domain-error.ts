@@ -27,6 +27,11 @@ export class InsufficientFundsError extends DomainError {
   readonly code = "INSUFFICIENT_FUNDS";
 }
 
+/** O saldo resultante não caberia no maior valor armazenável. */
+export class BalanceLimitExceededError extends DomainError {
+  readonly code = "BALANCE_LIMIT_EXCEEDED";
+}
+
 /** Transação mal formada na entrada (ex.: REFUND sem referência, OPENING externo). */
 export class InvalidWagerTransactionError extends DomainError {
   readonly code = "INVALID_TRANSACTION";
