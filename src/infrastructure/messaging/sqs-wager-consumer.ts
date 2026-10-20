@@ -126,7 +126,7 @@ export class SqsWagerConsumer {
         for (const message of group) {
           // Se uma mensagem do grupo voltou para retry, as seguintes não podem
           // passar na frente: voltam para a fila e a FIFO as entrega depois dela.
-          const outcome = this.stopping || blocked ? await this.release(message) : await this.handle(message);
+          const outcome = this.stopping || blocked ? await this.release(message) : await this.handleSafely(message);
           if (outcome === "retry") blocked = true;
           results.push(outcome);
         }
@@ -136,8 +136,28 @@ export class SqsWagerConsumer {
     return outcomes.flat();
   }
 
+  /**
+   * Nenhum erro de uma mensagem derruba o lote: falha inesperada fora do
+   * use case (ex.: banco fora ao consultar a inbox) também vira retry.
+   * Sem isso, a exceção abortava o Promise.all e os outros grupos seguiam
+   * rodando sem ninguém esperar por eles.
+   */
+  private async handleSafely(message: Message): Promise<Outcome> {
+    try {
+      return await this.handle(message);
+    } catch (error) {
+      try {
+        return await this.retryLater(message, error, { sqsMessageId: message.MessageId });
+      } catch (visibilityError) {
+        // nem o SQS respondeu: a mensagem volta sozinha quando a visibilidade expirar
+        this.logger.error({ msg: "could not schedule retry", sqsMessageId: message.MessageId, error: (visibilityError as Error).message });
+        return "retry";
+      }
+    }
+  }
+
   async handle(message: Message): Promise<Outcome> {
-    const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? "1");
+    const receiveCount = receiveCountOf(message);
 
     let envelope: Envelope;
     try {
@@ -178,16 +198,7 @@ export class SqsWagerConsumer {
         // nunca vai dar certo: não gasta tentativas
         return this.deadLetter(message, errorCode(error), (error as Error).message);
       }
-      if (receiveCount >= this.options.maxAttempts) {
-        return this.deadLetter(message, "RETRIES_EXHAUSTED", (error as Error).message);
-      }
-      const delay = Math.min(
-        this.options.backoffBaseSeconds * 2 ** (receiveCount - 1),
-        this.options.backoffMaxSeconds,
-      );
-      await this.setVisibility(message, delay);
-      this.logger.warn({ msg: "transient failure, will retry", ...log, kind, retryInSeconds: delay });
-      return "retry";
+      return this.retryLater(message, error, log);
     }
 
     // Commit feito. O ack fica fora do try de cima: se ele falhar, a operação
@@ -218,6 +229,18 @@ export class SqsWagerConsumer {
     await this.ack(message);
     this.logger.log({ msg: "duplicate message acked", ...log });
     return "duplicate";
+  }
+
+  /** Erro transitório: backoff pela invisibilidade; esgotadas as tentativas, DLQ. */
+  private async retryLater(message: Message, error: unknown, log: Record<string, unknown>): Promise<Outcome> {
+    const receiveCount = receiveCountOf(message);
+    if (receiveCount >= this.options.maxAttempts) {
+      return this.deadLetter(message, "RETRIES_EXHAUSTED", (error as Error).message);
+    }
+    const delay = Math.min(this.options.backoffBaseSeconds * 2 ** (receiveCount - 1), this.options.backoffMaxSeconds);
+    await this.setVisibility(message, delay);
+    this.logger.warn({ msg: "transient failure, will retry", ...log, kind: classifyError(error), retryInSeconds: delay });
+    return "retry";
   }
 
   private async run(): Promise<void> {
@@ -271,6 +294,10 @@ export class SqsWagerConsumer {
       }),
     );
   }
+}
+
+function receiveCountOf(message: Message): number {
+  return Number(message.Attributes?.ApproximateReceiveCount ?? "1");
 }
 
 function parseEnvelope(body: string | undefined): Envelope {

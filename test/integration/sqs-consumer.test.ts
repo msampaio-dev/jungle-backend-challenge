@@ -4,6 +4,7 @@ import { ConnectionException } from "@mikro-orm/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import { type Outcome, SqsWagerConsumer, type SqsConsumerOptions } from "../../src/infrastructure/messaging/sqs-wager-consumer";
+import { InboxRepository } from "../../src/infrastructure/database/inbox.repository";
 import { createTestOrm } from "./support/database";
 import { command, createWallet, snapshot, type TestWallet } from "./support/fixtures";
 import { createTestQueue } from "./support/sqs";
@@ -170,6 +171,23 @@ describe("consumidor SQS", () => {
 
     await consumeAll(consumer(flaky));
     expect(applied).toEqual(["10.00", "20.00"]);
+  });
+
+  test("banco fora antes do use case (consulta da inbox) vira retry, não exceção", async () => {
+    const w = await createWallet(orm, "100.00");
+    await main.send(envelope(w, { amount: "25.00" }), w.walletId);
+    let finds = 0;
+    class FlakyInbox extends InboxRepository {
+      override async find(...args: Parameters<InboxRepository["find"]>) {
+        if (++finds === 1) throw new ConnectionException(new Error("db down"));
+        return super.find(...args);
+      }
+    }
+    const worker = new SqsWagerConsumer(main.client, orm, useCase(), options, new FlakyInbox());
+
+    expect(await worker.pollOnce()).toEqual(["retry"]);
+    expect(await consumeAll(worker)).toEqual(["processed"]);
+    expect((await snapshot(orm, w.walletId)).debits).toBe(1);
   });
 
   test("worker morto depois do commit e antes do ack: reentrega não duplica", async () => {
