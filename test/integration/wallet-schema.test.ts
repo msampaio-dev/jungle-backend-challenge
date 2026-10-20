@@ -174,6 +174,12 @@ describe("wager_transactions", () => {
     );
   });
 
+  test("PENDING_REFERENCE sem próxima checagem é recusado (ficaria invisível para o worker)", async () => {
+    const pending = { kind: "REFUND", reference_external_transaction_id: "x", status: "PENDING_REFERENCE" };
+    await expect(insertTransaction(crypto.randomUUID(), pending)).rejects.toThrow(/wager_tx_pending_reference_schedule_ck/);
+    await insertTransaction(crypto.randomUUID(), { ...pending, next_attempt_at: new Date().toISOString() });
+  });
+
   test("REJECTED sem failure_code é recusado", async () => {
     await expect(insertTransaction(crypto.randomUUID(), { status: "REJECTED" })).rejects.toThrow(
       /wager_tx_failure_code_ck/,

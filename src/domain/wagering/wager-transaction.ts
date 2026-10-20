@@ -57,6 +57,8 @@ export interface WagerTransactionState extends Omit<CreateWagerTransactionProps,
   failureCode: FailureCode | undefined;
   resultBalance: Money | undefined;
   processedAt: Date | undefined;
+  referenceAttempts: number;
+  nextReferenceCheckAt: Date | undefined;
 }
 
 export interface OpeningTransactionProps {
@@ -100,6 +102,9 @@ export class WagerTransaction {
     private _failureCode?: FailureCode,
     private _resultBalance?: Money,
     private _processedAt?: Date,
+    /** tentativas de resolver a referência (a da chegada conta como a primeira) */
+    private _referenceAttempts = 0,
+    private _nextReferenceCheckAt?: Date,
   ) {}
 
   /** Nasce em PENDING. Valida a forma da transação vinda de um provedor. */
@@ -202,6 +207,8 @@ export class WagerTransaction {
       state.failureCode,
       state.resultBalance,
       state.processedAt,
+      state.referenceAttempts,
+      state.nextReferenceCheckAt,
     );
   }
 
@@ -226,6 +233,15 @@ export class WagerTransaction {
     return this._processedAt;
   }
 
+  get referenceAttempts(): number {
+    return this._referenceAttempts;
+  }
+
+  /** Quando o worker deve tentar de novo. Só existe em PENDING_REFERENCE. */
+  get nextReferenceCheckAt(): Date | undefined {
+    return this._nextReferenceCheckAt;
+  }
+
   // ---- transições
 
   markProcessed(referenceTransactionId: string | undefined, at: Date, resultBalance: Money): void {
@@ -234,11 +250,15 @@ export class WagerTransaction {
     this._referenceTransactionId = referenceTransactionId;
     this._resultBalance = resultBalance;
     this._processedAt = at;
+    this._nextReferenceCheckAt = undefined;
   }
 
-  markPendingReference(): void {
+  /** Mais uma tentativa sem achar a referência; a próxima fica para nextCheckAt. */
+  markPendingReference(nextCheckAt: Date): void {
     this.assertNotTerminal("markPendingReference");
     this._status = WagerTransactionStatus.PendingReference;
+    this._referenceAttempts += 1;
+    this._nextReferenceCheckAt = nextCheckAt;
   }
 
   reject(code: FailureCode, observedBalance: Money): void {
@@ -246,12 +266,21 @@ export class WagerTransaction {
     this._status = WagerTransactionStatus.Rejected;
     this._failureCode = code;
     this._resultBalance = observedBalance;
+    this._nextReferenceCheckAt = undefined;
+  }
+
+  /** Última tentativa sem conseguir resolver a referência: conta a tentativa e rejeita. */
+  rejectAfterReferenceAttempts(code: FailureCode, observedBalance: Money): void {
+    this.assertNotTerminal("rejectAfterReferenceAttempts");
+    this._referenceAttempts += 1;
+    this.reject(code, observedBalance);
   }
 
   fail(code: FailureCode): void {
     this.assertNotTerminal("fail");
     this._status = WagerTransactionStatus.Failed;
     this._failureCode = code;
+    this._nextReferenceCheckAt = undefined;
   }
 
   // ---- consultas

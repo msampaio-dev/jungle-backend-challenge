@@ -11,6 +11,12 @@ import {
 import { Money, type MoneyProps } from "../../domain/shared/money";
 import { FailureCode } from "../../domain/wagering/failure-code";
 import {
+  DEFAULT_REFERENCE_RETRY_POLICY,
+  nextReferenceCheckAt,
+  type ReferenceRetryPolicy,
+  referenceAttemptsExhausted,
+} from "../../domain/wagering/reference-retry-policy";
+import {
   WagerTransaction,
   type WagerTransactionKind,
   type WagerTransactionStatus,
@@ -65,6 +71,7 @@ export class ProcessWagerTransactionUseCase {
     private readonly wallets = new WalletRepository(),
     private readonly transactions = new WagerTransactionRepository(),
     private readonly outbox = new OutboxRepository(),
+    private readonly referencePolicy: ReferenceRetryPolicy = DEFAULT_REFERENCE_RETRY_POLICY,
   ) {}
 
   async execute(command: SubmitWagerCommand, options: ExecuteOptions = {}): Promise<WagerResult> {
@@ -190,9 +197,16 @@ export class ProcessWagerTransactionUseCase {
       reference =
         (await this.transactions.findByExternalId(em, tx.providerId, tx.referenceExternalTransactionId)) ?? undefined;
 
-      // referência ainda não chegou (ou ainda não foi resolvida): espera o worker
+      // Referência ainda não chegou (ou ainda não foi resolvida): esta tentativa
+      // conta. Esgotado o limite, desiste; senão, agenda a próxima para o worker.
       if (!reference || !reference.isTerminal()) {
-        tx.markPendingReference();
+        const attemptsMade = tx.referenceAttempts + 1;
+        if (referenceAttemptsExhausted(this.referencePolicy, attemptsMade)) {
+          const code = reference ? FailureCode.ReferenceNotProcessed : FailureCode.ReferenceNotFound;
+          tx.rejectAfterReferenceAttempts(code, wallet.balance);
+        } else {
+          tx.markPendingReference(nextReferenceCheckAt(this.referencePolicy, attemptsMade, now));
+        }
         return undefined;
       }
       const problem = tx.checkReference(reference);

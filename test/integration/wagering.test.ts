@@ -244,5 +244,13 @@ describe("regras de negócio", () => {
     );
     expect(result).toMatchObject({ status: "PENDING_REFERENCE", balance: { amount: "100.00" } });
     expect((await snapshot(orm, w.walletId)).version).toBe(1);
+
+    // a chegada conta como tentativa 1; a próxima checagem fica para ~2s depois
+    const [row] = await orm.em.getConnection().execute(
+      "select attempts, extract(epoch from (next_attempt_at - updated_at)) as wait from wager_transactions where id = ?",
+      [result.transactionId],
+    );
+    expect(row?.attempts).toBe(1);
+    expect(Number(row?.wait)).toBeCloseTo(2, 0);
   });
 });

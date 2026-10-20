@@ -103,13 +103,34 @@ describe("transições", () => {
     expect(t.resultBalance?.toJSON().amount).toBe("20.00");
   });
 
-  test("PENDING_REFERENCE pode voltar a ser marcado e depois resolver", () => {
+  test("PENDING_REFERENCE conta tentativas, guarda a próxima checagem e depois resolve", () => {
     const t = tx({ kind: Kind.Refund, referenceExternalTransactionId: "ext-0" });
-    t.markPendingReference();
-    t.markPendingReference();
+    expect(t.referenceAttempts).toBe(0);
+
+    const first = new Date(AT.getTime() + 2_000);
+    t.markPendingReference(first);
     expect(t.status).toBe(Status.PendingReference);
+    expect(t.referenceAttempts).toBe(1);
+    expect(t.nextReferenceCheckAt).toEqual(first);
+
+    const second = new Date(AT.getTime() + 6_000);
+    t.markPendingReference(second);
+    expect(t.referenceAttempts).toBe(2);
+    expect(t.nextReferenceCheckAt).toEqual(second);
+
     t.markProcessed("ref-1", AT, brl("100.00"));
     expect(t.status).toBe(Status.Processed);
+    expect(t.nextReferenceCheckAt).toBeUndefined(); // resolvida: sai da fila do worker
+  });
+
+  test("desistir da referência conta a última tentativa e rejeita", () => {
+    const t = tx({ kind: Kind.Refund, referenceExternalTransactionId: "ext-0" });
+    t.markPendingReference(AT);
+    t.rejectAfterReferenceAttempts(FailureCode.ReferenceNotFound, brl("100.00"));
+    expect(t.status).toBe(Status.Rejected);
+    expect(t.failureCode).toBe(FailureCode.ReferenceNotFound);
+    expect(t.referenceAttempts).toBe(2);
+    expect(t.nextReferenceCheckAt).toBeUndefined();
   });
 
   test.each([
@@ -121,7 +142,7 @@ describe("transições", () => {
     toTerminal(t);
     expect(t.isTerminal()).toBe(true);
     expect(() => t.markProcessed(undefined, AT, brl("1.00"))).toThrow(InvalidTransactionStateError);
-    expect(() => t.markPendingReference()).toThrow(InvalidTransactionStateError);
+    expect(() => t.markPendingReference(AT)).toThrow(InvalidTransactionStateError);
     expect(() => t.reject(FailureCode.InsufficientFunds, brl("1.00"))).toThrow(InvalidTransactionStateError);
     expect(() => t.fail(FailureCode.ProcessingFailed)).toThrow(InvalidTransactionStateError);
   });

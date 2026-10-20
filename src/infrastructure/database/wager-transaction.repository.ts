@@ -54,7 +54,6 @@ export class WagerTransactionRepository {
       amount: tx.money.toJSON().amount,
       currency: tx.money.currency,
       referenceExternalTransactionId: tx.referenceExternalTransactionId ?? null,
-      attempts: 0,
       createdAt: tx.createdAt,
       ...this.mutableFields(tx, now),
     });
@@ -72,8 +71,37 @@ export class WagerTransactionRepository {
       failureCode: tx.failureCode ?? null,
       resultBalance: tx.resultBalance?.toJSON().amount ?? null,
       processedAt: tx.processedAt ?? null,
+      attempts: tx.referenceAttempts,
+      nextAttemptAt: tx.nextReferenceCheckAt ?? null,
       updatedAt: now,
     };
+  }
+
+  /**
+   * Aluga pendentes devidas para um worker: empurra next_attempt_at para
+   * daqui a leaseMs, então os outros workers não as veem. SKIP LOCKED evita
+   * dois workers alugarem a mesma linha ao mesmo tempo. Se o worker morrer,
+   * o aluguel vence e a transação volta a ficar devida. Não trava nada
+   * além deste UPDATE: o processamento é feito depois, uma a uma.
+   */
+  async leaseDuePendingReferences(
+    em: EntityManager,
+    limit: number,
+    leaseMs: number,
+  ): Promise<Array<{ id: string; walletId: string; attempts: number }>> {
+    const rows: Array<Record<string, unknown>> = await em.execute(
+      `update wager_transactions
+          set next_attempt_at = now() + make_interval(secs => ? / 1000.0)
+        where id in (
+          select id from wager_transactions
+           where status = PENDING_REFERENCE and next_attempt_at <= now()
+           order by next_attempt_at
+           limit ?
+           for update skip locked)
+       returning id, wallet_id, attempts`,
+      [leaseMs, limit],
+    );
+    return rows.map((r) => ({ id: String(r.id), walletId: String(r.wallet_id), attempts: Number(r.attempts) }));
   }
 
   private async findOne(em: EntityManager, where: Partial<WagerTransactionRecord>): Promise<WagerTransaction | null> {
@@ -103,5 +131,7 @@ function toWagerTransaction(r: WagerTransactionRecord): WagerTransaction {
     failureCode: (r.failureCode as FailureCode | null) ?? undefined,
     resultBalance: r.resultBalance ? money(r.resultBalance) : undefined,
     processedAt: r.processedAt ?? undefined,
+    referenceAttempts: r.attempts,
+    nextReferenceCheckAt: r.nextAttemptAt ?? undefined,
   });
 }
