@@ -94,7 +94,7 @@ export class WagerTransactionRepository {
           set next_attempt_at = now() + make_interval(secs => ? / 1000.0)
         where id in (
           select id from wager_transactions
-           where status = PENDING_REFERENCE and next_attempt_at <= now()
+           where status = 'PENDING_REFERENCE' and next_attempt_at <= now()
            order by next_attempt_at
            limit ?
            for update skip locked)
