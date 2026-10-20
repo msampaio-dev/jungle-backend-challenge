@@ -57,6 +57,8 @@ export interface ReconciliationResult {
   difference: MoneyProps;
   consistent: boolean;
   checkedEntries: number;
+  /** lançamentos que não começam onde o anterior terminou */
+  chainBreaks: number;
 }
 
 type Row = Record<string, unknown>;
@@ -133,17 +135,31 @@ export class WalletQueries {
    */
   async reconcile(walletId: string): Promise<ReconciliationResult> {
     assertUuid(walletId, "walletId");
+    // Uma única instrução: saldo, soma e encadeamento lidos da mesma foto do banco.
+    // Elo quebrado = lançamento que não começa onde o anterior terminou (o
+    // primeiro precisa começar em zero). A soma sozinha não pega isso.
     const [row] = await this.sql(
-      `select w.currency,
+      `with ledger as (
+         select direction, amount, balance_before,
+                lag(balance_after) over (order by seq) as previous_after
+           from wallet_ledger_entries
+          where wallet_id = ?
+       ),
+       totals as (
+         select coalesce(sum(case direction when 'CREDIT' then amount else -amount end), 0) as calculated,
+                count(*)::int as entries,
+                count(*) filter (where balance_before <> coalesce(previous_after, 0))::int as breaks
+           from ledger
+       )
+       select w.currency,
               w.balance::text as stored,
-              coalesce(sum(case l.direction when 'CREDIT' then l.amount else -l.amount end), 0)::numeric(18,2)::text as calculated,
-              (w.balance - coalesce(sum(case l.direction when 'CREDIT' then l.amount else -l.amount end), 0))::numeric(18,2)::text as difference,
-              count(l.id)::int as entries
-         from wallets w
-         left join wallet_ledger_entries l on l.wallet_id = w.id
-        where w.id = ?
-        group by w.id`,
-      [walletId],
+              t.calculated::numeric(18,2)::text as calculated,
+              (w.balance - t.calculated)::numeric(18,2)::text as difference,
+              t.entries,
+              t.breaks
+         from wallets w cross join totals t
+        where w.id = ?`,
+      [walletId, walletId],
     );
     if (!row) throw new WalletNotFoundError(`wallet ${walletId} not found`);
 
@@ -152,11 +168,17 @@ export class WalletQueries {
       storedBalance: money(row.stored, row.currency),
       calculatedBalance: money(row.calculated, row.currency),
       difference: money(row.difference, row.currency),
-      consistent: row.stored === row.calculated,
+      consistent: row.stored === row.calculated && Number(row.breaks) === 0,
       checkedEntries: Number(row.entries),
+      chainBreaks: Number(row.breaks),
     };
     if (!result.consistent) {
-      this.logger.error({ msg: "wallet balance diverges from ledger", walletId, difference: result.difference });
+      this.logger.error({
+        msg: "wallet balance diverges from ledger",
+        walletId,
+        difference: result.difference,
+        chainBreaks: result.chainBreaks,
+      });
       this.onDivergence(walletId);
     }
     return result;

@@ -215,7 +215,30 @@ describe("consultas", () => {
       difference: { amount: "0.00", currency: "BRL" },
       consistent: true,
       checkedEntries: 3,
+      chainBreaks: 0,
     });
+  });
+
+  test("reconciliação pega lançamento que não começa onde o anterior terminou", async () => {
+    const w = await newWallet(); // OPENING: 0.00 -> 100.00
+    const sql = (q: string, p: unknown[]) => api.orm.em.getConnection().execute(q, p);
+    const txId = crypto.randomUUID();
+    await sql(
+      `insert into wager_transactions (id, provider_id, external_transaction_id, idempotency_key, payload_hash,
+         wallet_id, player_id, round_id, game_id, kind, amount, currency, status, processed_at, created_at, updated_at)
+       values (?, 'p', ?, ?, ?, ?, ?, 'r', 'g', 'BET', 10, 'BRL', 'PROCESSED', now(), now(), now())`,
+      [txId, txId, txId, "0".repeat(64), w.walletId, w.playerId],
+    );
+    // conta certa (50 - 10 = 40), mas começa em 50 e não em 100: elo quebrado
+    await sql(
+      `insert into wallet_ledger_entries (id, wallet_id, transaction_id, direction, amount, currency, balance_before, balance_after, created_at)
+       values (?, ?, ?, 'DEBIT', 10, 'BRL', 50, 40, now())`,
+      [crypto.randomUUID(), w.walletId, txId],
+    );
+    await sql("update wallets set balance = 90 where id = ?", [w.walletId]); // soma do ledger = 90: a soma não acusa
+
+    const res = await api.call("POST", `/wallets/${w.walletId}/reconciliation`);
+    expect(res.body).toMatchObject({ consistent: false, chainBreaks: 1, difference: { amount: "0.00" } });
   });
 
   test("reconciliação aponta divergência sem corrigir", async () => {
