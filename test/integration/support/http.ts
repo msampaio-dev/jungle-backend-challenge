@@ -14,12 +14,13 @@ export interface TestApi {
 }
 
 /** App Nest real ouvindo numa porta livre, apontada para o banco de teste. */
-export async function startTestApi(): Promise<TestApi> {
+export async function startTestApi(options: { pendingReferenceWorker?: boolean } = {}): Promise<TestApi> {
   const orm = await createTestOrm();
   process.env.DATABASE_URL = process.env.DATABASE_TEST_URL;
   // a outbox tem testes próprios; aqui o relay só geraria ruído na fila
   process.env.OUTBOX_RELAY_ENABLED = "false";
   process.env.SQS_CONSUMER_ENABLED = "false";
+  process.env.PENDING_REFERENCE_WORKER_ENABLED = options.pendingReferenceWorker ? "true" : "false";
 
   const app = await NestFactory.create(AppModule, { logger: false });
   await app.listen(0, "127.0.0.1");
