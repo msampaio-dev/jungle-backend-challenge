@@ -13,6 +13,7 @@ import { classifyError, ErrorKind, errorCode } from "../../application/error-kin
 import type {
   ProcessWagerTransactionUseCase,
   SubmitWagerCommand,
+  WagerResult,
 } from "../../application/wagering/process-wager-transaction.use-case";
 import { payloadHash } from "../../application/wagering/payload-hash";
 import { InboxMessage } from "../../domain/messaging/inbox-message";
@@ -150,6 +151,7 @@ export class SqsWagerConsumer {
     const known = await this.inbox.find(this.orm.em.fork(), this.options.consumerName, envelope.messageId);
     if (known) return this.alreadyHandled(message, known, hash, log);
 
+    let result: WagerResult;
     try {
       const inboxMessage = InboxMessage.receive({
         messageId: envelope.messageId,
@@ -159,14 +161,9 @@ export class SqsWagerConsumer {
       });
       inboxMessage.markProcessed(new Date());
 
-      const result = await this.useCase.execute(toCommand(envelope), {
+      result = await this.useCase.execute(toCommand(envelope), {
         inTransaction: (em) => this.inbox.insert(em, inboxMessage),
       });
-
-      // commit feito: agora sim, ack. Se morrer aqui, a inbox cuida da reentrega.
-      await this.ack(message);
-      this.logger.log({ msg: "message processed", ...log, transactionId: result.transactionId, status: result.status });
-      return "processed";
     } catch (error) {
       // outra instância processou a mesma mensagem ao mesmo tempo e confirmou primeiro
       if (error instanceof UniqueConstraintViolationException && error.message.includes("inbox_messages_pk")) {
@@ -190,6 +187,16 @@ export class SqsWagerConsumer {
       this.logger.warn({ msg: "transient failure, will retry", ...log, kind, retryInSeconds: delay });
       return "retry";
     }
+
+    // Commit feito. O ack fica fora do try de cima: se ele falhar, a operação
+    // NÃO falhou. A mensagem volta depois da visibilidade e a inbox a reconhece.
+    try {
+      await this.ack(message);
+    } catch (error) {
+      this.logger.warn({ msg: "ack failed after commit; redelivery will be acked as duplicate", ...log, error: (error as Error).message });
+    }
+    this.logger.log({ msg: "message processed", ...log, transactionId: result.transactionId, status: result.status });
+    return "processed";
   }
 
   /**

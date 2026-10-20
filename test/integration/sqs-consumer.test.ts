@@ -191,6 +191,28 @@ describe("consumidor SQS", () => {
     expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
   });
 
+  test("ack que falha depois do commit não manda mensagem já processada para a DLQ", async () => {
+    options.maxAttempts = 1; // na última tentativa o bug mandava para a DLQ
+    const w = await createWallet(orm, "100.00");
+    await main.send(envelope(w, { amount: "25.00" }), w.walletId);
+
+    let deletes = 0;
+    const flakyAck = {
+      send: (cmd: unknown, opts?: unknown) =>
+        cmd instanceof DeleteMessageCommand && ++deletes === 1
+          ? Promise.reject(new Error("network blip on ack"))
+          : main.client.send(cmd as never, opts as never),
+    } as unknown as SQSClient;
+
+    expect(await consumer(useCase(), flakyAck).pollOnce()).toEqual(["processed"]);
+    expect(await dlq.receiveAll()).toHaveLength(0);
+
+    // sem ack, a mensagem volta depois da visibilidade e a inbox a reconhece
+    await Bun.sleep(2_500);
+    expect(await consumeAll(consumer())).toEqual(["duplicate"]);
+    expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
+  });
+
   test("SIGTERM: termina a mensagem em andamento e devolve as outras à fila", async () => {
     const w = await createWallet(orm, "100.00");
     for (let i = 0; i < 3; i++) await main.send(envelope(w, { amount: "10.00" }), w.walletId);
