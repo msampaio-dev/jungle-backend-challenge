@@ -23,6 +23,7 @@ import {
 } from "../../domain/wagering/wager-transaction";
 import type { Wallet } from "../../domain/wallet/wallet";
 import { LedgerDirection, type WalletLedgerEntry } from "../../domain/wallet/wallet-ledger-entry";
+import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
@@ -160,7 +161,8 @@ export class ProcessWagerTransactionUseCase {
       );
     }
 
-    const now = new Date();
+    // relógio do banco: a próxima checagem e o processed_at batem com now() do Postgres
+    const now = await databaseNow(em);
     const expectedVersion = wallet.version;
     const entry = await this.resolve(em, tx, wallet, now);
 

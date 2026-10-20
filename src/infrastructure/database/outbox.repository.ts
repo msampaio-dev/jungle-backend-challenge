@@ -4,13 +4,18 @@ import { OutboxMessage } from "../../domain/messaging/outbox-message";
 type Row = Record<string, unknown>;
 
 export class OutboxRepository {
-  /** Chamado dentro da transação da operação de negócio. */
+  /**
+   * Chamado dentro da transação da operação de negócio. Evento novo nasce
+   * devido AGORA no relógio do banco (o mesmo que o claimDue compara), não
+   * no relógio da máquina que o criou: senão uma app adiantada atrasaria a
+   * publicação pelo tamanho da diferença.
+   */
   async insert(em: EntityManager, messages: OutboxMessage[]): Promise<void> {
     for (const m of messages) {
       await em.execute(
         `insert into outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
-         values (?, ?, ?, ?::jsonb, ?, ?, ?)`,
-        [m.id, m.aggregateId, m.eventType, JSON.stringify(m.payload), m.occurredAt, m.attempts, m.nextAttemptAt ?? m.occurredAt],
+         values (?, ?, ?, ?::jsonb, ?, ?, clock_timestamp())`,
+        [m.id, m.aggregateId, m.eventType, JSON.stringify(m.payload), m.occurredAt, m.attempts],
       );
     }
   }

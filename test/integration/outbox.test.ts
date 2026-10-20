@@ -200,8 +200,12 @@ describe("crash", () => {
         await new Promise<void>((resolve) => (release = resolve));
       },
     };
-    // o processo que vai morrer tem o próprio pool de conexões, como um processo de verdade
+    // o processo que vai morrer tem o próprio pool, de UMA conexão: assim sabemos qual matar
+    const poolMax = process.env.DATABASE_POOL_MAX;
+    process.env.DATABASE_POOL_MAX = "1";
     const dyingOrm = await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL));
+    process.env.DATABASE_POOL_MAX = poolMax;
+    const [{ pid }] = (await dyingOrm.em.getConnection().execute("select pg_backend_pid() as pid")) as [{ pid: number }];
     const dying = new OutboxRelay(dyingOrm, stuck).publishBatch();
     const outcome = dying.then(
       () => "committed",
@@ -213,10 +217,8 @@ describe("crash", () => {
     expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(0);
 
     // "kill -9": o Postgres derruba a conexão do processo que travou
-    await sql(
-      `select pg_terminate_backend(pid) from pg_stat_activity
-        where state = 'idle in transaction' and query ilike '%outbox_messages%' and pid <> pg_backend_pid()`,
-    );
+    const [killed] = await sql("select pg_terminate_backend(?) as ok", [pid]);
+    expect(killed!.ok).toBe(true);
     release();
     // processo morto não confirma nada; e se o driver nem responder, tanto faz: ele morreu
     expect(await Promise.race([outcome, Bun.sleep(5_000).then(() => "died")])).toBe("died");

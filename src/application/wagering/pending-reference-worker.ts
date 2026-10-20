@@ -5,6 +5,7 @@ import { OutboxMessage } from "../../domain/messaging/outbox-message";
 import { FailureCode } from "../../domain/wagering/failure-code";
 import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction";
+import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
@@ -94,7 +95,7 @@ export class PendingReferenceWorker {
         return "skipped";
       }
 
-      const now = new Date();
+      const now = await databaseNow(em);
       const expectedVersion = wallet.version;
       const entry = await this.useCase.resolve(em, tx, wallet, now);
 
@@ -147,7 +148,7 @@ export class PendingReferenceWorker {
       const tx = await this.transactions.findById(em, lease.id);
       if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return "skipped";
 
-      const now = new Date();
+      const now = await databaseNow(em);
       tx.fail(FailureCode.ProcessingFailed);
       await this.transactions.update(em, tx, now);
       await this.outbox.insert(

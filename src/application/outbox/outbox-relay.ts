@@ -1,5 +1,6 @@
 import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
+import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import type { EventPublisher } from "./event-publisher";
 
@@ -38,16 +39,19 @@ export class OutboxRelay {
   async publishBatch(): Promise<BatchResult> {
     return this.orm.em.fork().transactional(async (em) => {
       const messages = await this.outbox.claimDue(em, this.options.batchSize);
+      // backoff calculado no relógio do banco, o mesmo que o claimDue compara
+      const now = await databaseNow(em);
       const result = { published: 0, failed: 0 };
 
       for (const message of messages) {
         try {
           await this.publisher.publish(message);
-          message.markPublished(new Date());
+          message.markPublished(now);
           await this.outbox.save(em, message);
           result.published++;
         } catch (error) {
-          message.scheduleRetry(new Date());
+          // conta a partir da falha: a publicação pode ter levado o timeout inteiro
+          message.scheduleRetry(await databaseNow(em));
           await this.outbox.save(em, message, (error as Error).message);
           result.failed++;
           this.logger.warn({
