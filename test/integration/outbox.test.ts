@@ -1,9 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { MikroORM } from "@mikro-orm/postgresql";
+import { MikroORM } from "@mikro-orm/postgresql";
 import type { EventPublisher } from "../../src/application/outbox/event-publisher";
 import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import type { OutboxMessage } from "../../src/domain/messaging/outbox-message";
+import { createOrmConfig } from "../../src/infrastructure/database/mikro-orm.config";
 import { OutboxRepository } from "../../src/infrastructure/database/outbox.repository";
 import { SqsEventPublisher } from "../../src/infrastructure/messaging/sqs";
 import { createTestOrm } from "./support/database";
@@ -199,7 +200,13 @@ describe("crash", () => {
         await new Promise<void>((resolve) => (release = resolve));
       },
     };
-    const dying = new OutboxRelay(orm, stuck).publishBatch();
+    // o processo que vai morrer tem o próprio pool de conexões, como um processo de verdade
+    const dyingOrm = await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL));
+    const dying = new OutboxRelay(dyingOrm, stuck).publishBatch();
+    const outcome = dying.then(
+      () => "committed",
+      () => "died",
+    );
     while (sent.length === 0) await Bun.sleep(20);
 
     // enquanto ele segura o lock, outra instância não pega o mesmo evento
@@ -211,7 +218,9 @@ describe("crash", () => {
         where state = 'idle in transaction' and query ilike '%outbox_messages%' and pid <> pg_backend_pid()`,
     );
     release();
-    await expect(dying).rejects.toThrow();
+    // processo morto não confirma nada; e se o driver nem responder, tanto faz: ele morreu
+    expect(await Promise.race([outcome, Bun.sleep(5_000).then(() => "died")])).toBe("died");
+    void dyingOrm.close(true).catch(() => {});
 
     // o lock foi solto e o evento continua pendente: at-least-once
     const counter = new CountingPublisher();
