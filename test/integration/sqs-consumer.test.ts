@@ -86,6 +86,18 @@ describe("consumidor SQS", () => {
     expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
   });
 
+  test("mesmo messageId com outro conteúdo não é descartado: vai para a DLQ", async () => {
+    const w = await createWallet(orm, "100.00");
+    await main.send(envelope(w, { amount: "10.00" }, "msg-reused"), w.walletId);
+    await main.send(envelope(w, { amount: "20.00" }, "msg-reused"), w.walletId);
+
+    expect(await consumeAll(consumer())).toEqual(["processed", "dead-letter"]);
+    const [dead] = await dlq.receiveAll();
+    expect(dead?.MessageAttributes?.errorCode?.StringValue).toBe("MESSAGE_ID_CONFLICT");
+    expect(JSON.parse(dead!.Body!).data.money.amount).toBe("20.00");
+    expect((await snapshot(orm, w.walletId)).balance).toBe("90.00");
+  });
+
   test("rejeição de negócio é resultado, não erro: ack e nada na DLQ", async () => {
     const w = await createWallet(orm, "10.00");
     await main.send(envelope(w, { amount: "25.00" }), w.walletId);

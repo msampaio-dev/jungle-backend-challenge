@@ -148,12 +148,7 @@ export class SqsWagerConsumer {
 
     // reentrega de algo que já foi confirmado: só falta o ack
     const known = await this.inbox.find(this.orm.em.fork(), this.options.consumerName, envelope.messageId);
-    if (known) {
-      if (known.payloadHash !== hash) this.logger.warn({ msg: "messageId reused with a different payload", ...log });
-      await this.ack(message);
-      this.logger.log({ msg: "duplicate message acked", ...log });
-      return "duplicate";
-    }
+    if (known) return this.alreadyHandled(message, known, hash, log);
 
     try {
       const inboxMessage = InboxMessage.receive({
@@ -175,8 +170,8 @@ export class SqsWagerConsumer {
     } catch (error) {
       // outra instância processou a mesma mensagem ao mesmo tempo e confirmou primeiro
       if (error instanceof UniqueConstraintViolationException && error.message.includes("inbox_messages_pk")) {
-        await this.ack(message);
-        return "duplicate";
+        const winner = await this.inbox.find(this.orm.em.fork(), this.options.consumerName, envelope.messageId);
+        if (winner) return this.alreadyHandled(message, winner, hash, log);
       }
 
       const kind = classifyError(error);
@@ -195,6 +190,25 @@ export class SqsWagerConsumer {
       this.logger.warn({ msg: "transient failure, will retry", ...log, kind, retryInSeconds: delay });
       return "retry";
     }
+  }
+
+  /**
+   * O messageId já está na inbox. Mesmo conteúdo: é reentrega, só falta o
+   * ack. Conteúdo diferente: é outra operação usando um id repetido; não dá
+   * para processar nem para descartar em silêncio, então vai para a DLQ.
+   */
+  private async alreadyHandled(
+    message: Message,
+    known: InboxMessage,
+    hash: string,
+    log: Record<string, unknown>,
+  ): Promise<Outcome> {
+    if (known.payloadHash !== hash) {
+      return this.deadLetter(message, "MESSAGE_ID_CONFLICT", "messageId was already used with a different payload");
+    }
+    await this.ack(message);
+    this.logger.log({ msg: "duplicate message acked", ...log });
+    return "duplicate";
   }
 
   private async run(): Promise<void> {
