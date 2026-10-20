@@ -5,6 +5,8 @@
  */
 export abstract class ApplicationError extends Error {
   abstract readonly code: string;
+  /** campos extras que vão no corpo da resposta de erro */
+  readonly details: Record<string, unknown> = {};
 
   constructor(message: string) {
     super(message);
@@ -25,8 +27,15 @@ export class WalletNotFoundError extends ApplicationError {
   readonly code = "WALLET_NOT_FOUND";
 }
 
+/** Leva o id da wallet existente: quem perdeu a resposta do POST consegue continuar. */
 export class WalletAlreadyExistsError extends ApplicationError {
   readonly code = "WALLET_ALREADY_EXISTS";
+  override readonly details: { walletId: string };
+
+  constructor(message: string, walletId: string) {
+    super(message);
+    this.details = { walletId };
+  }
 }
 
 /** Mesma chave de idempotência (ou mesmo id externo) com payload diferente. */

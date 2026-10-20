@@ -1,6 +1,7 @@
 import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpStatus, Logger } from "@nestjs/common";
 import type { Response } from "express";
 import { classifyError, ErrorKind, errorCode } from "../../application/error-kind";
+import { ApplicationError } from "../../application/errors";
 
 const STATUS_BY_KIND: Record<ErrorKind, number> = {
   [ErrorKind.InvalidInput]: HttpStatus.BAD_REQUEST,
@@ -43,6 +44,7 @@ export class ErrorFilter implements ExceptionFilter {
         : kind === ErrorKind.Transient
           ? "service temporarily unavailable, retry with the same Idempotency-Key"
           : ((error as Error)?.message ?? "error");
-    response.status(status).json({ code: errorCode(error), message });
+    const details = error instanceof ApplicationError ? error.details : {};
+    response.status(status).json({ code: errorCode(error), message, ...details });
   }
 }

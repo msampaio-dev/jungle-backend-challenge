@@ -51,6 +51,14 @@ describe("wallets", () => {
     expect(fetched.body.playerId).toBe(created.body.playerId);
   });
 
+  test("resposta do POST perdida: o retry recebe 409 com o id da wallet existente", async () => {
+    const body = { playerId: crypto.randomUUID(), initialBalance: { amount: "1.00", currency: "BRL" } };
+    const first = await api.call("POST", "/wallets", body);
+    const retry = await api.call("POST", "/wallets", body);
+    expect(retry.status).toBe(409);
+    expect(retry.body).toMatchObject({ code: "WALLET_ALREADY_EXISTS", walletId: first.body.id });
+  });
+
   test("wallet duplicada é 409", async () => {
     const w = await newWallet();
     const res = await api.call("POST", "/wallets", { playerId: w.playerId, initialBalance: { amount: "1.00", currency: "BRL" } });
