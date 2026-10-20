@@ -4,7 +4,9 @@ import { ConnectionException } from "@mikro-orm/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import { type Outcome, SqsWagerConsumer, type SqsConsumerOptions } from "../../src/infrastructure/messaging/sqs-wager-consumer";
+import { ConsoleLogger, Logger } from "@nestjs/common";
 import { InboxRepository } from "../../src/infrastructure/database/inbox.repository";
+import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { createTestOrm } from "./support/database";
 import { command, createWallet, snapshot, type TestWallet } from "./support/fixtures";
 import { createTestQueue } from "./support/sqs";
@@ -75,6 +77,29 @@ describe("consumidor SQS", () => {
     expect((await snapshot(orm, w.walletId)).balance).toBe("75.00");
     expect(await inboxCount(msg.messageId)).toBe(1);
     expect(await main.receiveAll()).toHaveLength(0); // ack feito
+  });
+
+  test("logs do consumidor trazem messageId, correlationId e os ids da transação", async () => {
+    const lines: Array<Record<string, any>> = [];
+    Logger.overrideLogger(new JsonLogger((line) => lines.push(JSON.parse(line))));
+    try {
+      const w = await createWallet(orm, "100.00");
+      const msg = { ...envelope(w, { amount: "25.00" }), correlationId: "corr-sqs-1" };
+      await main.send(msg, w.walletId);
+      await consumeAll(consumer());
+
+      const expected = {
+        messageId: msg.messageId,
+        correlationId: "corr-sqs-1",
+        walletId: w.walletId,
+        providerId: "provider-a",
+        transactionId: expect.any(String),
+      };
+      expect(lines.find((l) => l.msg === "message processed")).toMatchObject(expected);
+      expect(lines.find((l) => l.msg === "wager transaction processed")).toMatchObject({ ...expected, channel: "sqs" });
+    } finally {
+      Logger.overrideLogger(new ConsoleLogger());
+    }
   });
 
   test("a mesma mensagem entregue duas vezes produz um único débito", async () => {

@@ -1,5 +1,5 @@
 import "reflect-metadata";
-import type { INestApplication } from "@nestjs/common";
+import type { INestApplication, LoggerService } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { AddressInfo } from "node:net";
@@ -14,7 +14,9 @@ export interface TestApi {
 }
 
 /** App Nest real ouvindo numa porta livre, apontada para o banco de teste. */
-export async function startTestApi(options: { pendingReferenceWorker?: boolean } = {}): Promise<TestApi> {
+export async function startTestApi(
+  options: { pendingReferenceWorker?: boolean; logger?: LoggerService } = {},
+): Promise<TestApi> {
   const orm = await createTestOrm();
   process.env.DATABASE_URL = process.env.DATABASE_TEST_URL;
   // a outbox tem testes próprios; aqui o relay só geraria ruído na fila
@@ -23,6 +25,7 @@ export async function startTestApi(options: { pendingReferenceWorker?: boolean }
   process.env.PENDING_REFERENCE_WORKER_ENABLED = options.pendingReferenceWorker ? "true" : "false";
 
   const app = await NestFactory.create(AppModule, { logger: false });
+  if (options.logger) app.useLogger(options.logger);
   await app.listen(0, "127.0.0.1");
   const { port } = app.getHttpServer().address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;

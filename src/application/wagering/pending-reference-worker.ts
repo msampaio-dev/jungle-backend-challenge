@@ -6,6 +6,7 @@ import { FailureCode } from "../../domain/wagering/failure-code";
 import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../../infrastructure/database/clock";
+import { addToContext, runWithContext } from "../../infrastructure/observability/context";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { describeError } from "../../infrastructure/observability/json-logger";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
@@ -70,11 +71,16 @@ export class PendingReferenceWorker {
 
     const outcomes: PendingOutcome[] = [];
     for (const lease of leases) {
-      try {
-        outcomes.push(await this.resolveOne(lease));
-      } catch (error) {
-        outcomes.push(await this.handleFailure(lease, error));
-      }
+      // cada pendente com o seu contexto de log; o correlationId original entra ao carregar a transação
+      outcomes.push(
+        await runWithContext({ transactionId: lease.id, walletId: lease.walletId }, async () => {
+          try {
+            return await this.resolveOne(lease);
+          } catch (error) {
+            return this.handleFailure(lease, error);
+          }
+        }),
+      );
     }
     return outcomes;
   }
@@ -84,6 +90,7 @@ export class PendingReferenceWorker {
       // wallet primeiro, como no use case: mesma ordem de locks em todo lugar
       const wallet = await this.wallets.lockById(em, lease.walletId);
       const tx = await this.transactions.findById(em, lease.id);
+      if (tx) addToContext({ correlationId: tx.correlationId, providerId: tx.providerId });
 
       // Outro worker chegou antes (o aluguel venceu enquanto este demorava):
       // a transação já mudou de estado ou de tentativa. Não mexe.

@@ -1,5 +1,6 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { InvalidRequestError } from "../../application/errors";
+import { currentContext } from "../../infrastructure/observability/context";
 import { type WalletView, WalletQueries } from "../../application/queries/wallet-queries";
 import { CreateWalletUseCase } from "../../application/wallet/create-wallet.use-case";
 import type { MoneyProps } from "../../domain/shared/money";
@@ -25,6 +26,7 @@ export class WalletsController {
     const wallet = await this.createWallet.execute({
       playerId: playerId as string,
       initialBalance: initialBalance as MoneyProps,
+      correlationId: currentContext().correlationId,
     });
     return { id: wallet.id, playerId: wallet.playerId, balance: wallet.balance.toJSON(), version: wallet.version };
   }

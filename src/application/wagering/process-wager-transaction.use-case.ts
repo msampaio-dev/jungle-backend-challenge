@@ -1,4 +1,5 @@
 import { UniqueConstraintViolationException } from "@mikro-orm/core";
+import { Logger } from "@nestjs/common";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import type { EventContext } from "../../domain/messaging/integration-event";
 import { OutboxMessage } from "../../domain/messaging/outbox-message";
@@ -29,6 +30,7 @@ import { OutboxRepository } from "../../infrastructure/database/outbox.repositor
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { IdempotencyConflictError, WalletNotFoundError } from "../errors";
+import { addToContext } from "../../infrastructure/observability/context";
 import { payloadHash } from "./payload-hash";
 
 /** Entrada comum à API HTTP e ao consumidor SQS. */
@@ -69,7 +71,11 @@ export interface ExecuteOptions {
    * consumidor SQS grava a inbox aqui). Roda também no caminho de replay.
    */
   inTransaction?: (em: EntityManager) => Promise<void>;
+  /** por onde a operação chegou (logs e métricas) */
+  channel?: WagerChannel;
 }
+
+export type WagerChannel = "http" | "sqs";
 
 /** Entrada já validada; vira WagerTransaction dentro da transação SQL, com a data do banco. */
 type PreparedWager = Omit<CreateWagerTransactionProps, "createdAt">;
@@ -78,6 +84,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_CONSTRAINTS = /wager_tx_idempotency_uq|wager_tx_external_id_uq/;
 
 export class ProcessWagerTransactionUseCase {
+  private readonly logger = new Logger(ProcessWagerTransactionUseCase.name);
+
   constructor(
     private readonly orm: MikroORM,
     private readonly wallets = new WalletRepository(),
@@ -87,17 +95,37 @@ export class ProcessWagerTransactionUseCase {
   ) {}
 
   async execute(command: SubmitWagerCommand, options: ExecuteOptions = {}): Promise<WagerResult> {
+    const channel = options.channel ?? "http";
+    // latência medida no processo, com relógio monotônico (não depende de relógio de parede)
+    const startedAt = performance.now();
+
     // Segunda volta só acontece se outra instância gravou a mesma chave entre
     // a nossa leitura e o nosso INSERT: aí a releitura vira replay ou conflito.
     for (let attempt = 1; ; attempt++) {
       const prepared = this.build(command);
+      addToContext({ walletId: prepared.walletId, providerId: prepared.providerId });
       try {
         const trace = { correlationId: prepared.correlationId ?? prepared.id, causationId: command.causationId };
-        return await this.orm.em.fork().transactional(async (em) => {
+        const result = await this.orm.em.fork().transactional(async (em) => {
           const result = await this.process(em, prepared, trace);
           await options.inTransaction?.(em);
           return result;
         });
+
+        // depois do commit: o log nunca anuncia algo que não foi confirmado
+        addToContext({ transactionId: result.transactionId });
+        this.logger.log({
+          msg: result.idempotentReplay ? "idempotent replay" : "wager transaction processed",
+          transactionId: result.transactionId,
+          walletId: prepared.walletId,
+          providerId: prepared.providerId,
+          kind: prepared.kind,
+          status: result.status,
+          failureCode: result.failureCode,
+          channel,
+          durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
+        });
+        return result;
       } catch (error) {
         const raced = error instanceof UniqueConstraintViolationException && IDEMPOTENCY_CONSTRAINTS.test(error.message);
         if (raced && attempt === 1) continue;

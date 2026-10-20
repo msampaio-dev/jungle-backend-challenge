@@ -20,6 +20,7 @@ import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
+import { runWithContext } from "../observability/context";
 import { describeError } from "../observability/json-logger";
 
 export interface SqsConsumerOptions {
@@ -168,6 +169,13 @@ export class SqsWagerConsumer {
       return this.deadLetter(message, "INVALID_ENVELOPE", (error as Error).message);
     }
 
+    // daqui em diante, todo log (inclusive o do use case) sai com os ids da mensagem
+    return runWithContext({ messageId: envelope.messageId, correlationId: envelope.correlationId ?? envelope.messageId }, () =>
+      this.handleEnvelope(message, envelope, receiveCount),
+    );
+  }
+
+  private async handleEnvelope(message: Message, envelope: Envelope, receiveCount: number): Promise<Outcome> {
     const hash = payloadHash(envelope.data);
     const log = { messageId: envelope.messageId, sqsMessageId: message.MessageId, receiveCount };
 
@@ -178,6 +186,7 @@ export class SqsWagerConsumer {
     let result: WagerResult;
     try {
       result = await this.useCase.execute(toCommand(envelope), {
+        channel: "sqs",
         // dentro da transação da operação, com a data do relógio do banco
         inTransaction: async (em) => {
           const now = await databaseNow(em);

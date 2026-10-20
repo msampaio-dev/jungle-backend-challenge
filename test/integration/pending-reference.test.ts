@@ -5,6 +5,8 @@ import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/p
 import type { ReferenceRetryPolicy } from "../../src/domain/wagering/reference-retry-policy";
 import { WagerTransactionRepository } from "../../src/infrastructure/database/wager-transaction.repository";
 import { ConnectionException } from "@mikro-orm/core";
+import { ConsoleLogger, Logger } from "@nestjs/common";
+import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { createTestOrm } from "./support/database";
 import { command, createWallet, snapshot, type TestWallet } from "./support/fixtures";
 
@@ -294,5 +296,26 @@ describe("worker de PENDING_REFERENCE", () => {
 
     const [due] = await sql("select next_attempt_at <= clock_timestamp() as due from wager_transactions where id = ?", [other.transactionId]);
     expect(due!.due).toBe(false);
+  });
+
+  test("logs do worker trazem os ids da transação e o correlationId original", async () => {
+    const lines: Array<Record<string, any>> = [];
+    Logger.overrideLogger(new JsonLogger((line) => lines.push(JSON.parse(line))));
+    try {
+      const { run, worker } = setup();
+      const w = await createWallet(orm, "100.00");
+      const refund = await run({ ...refundOf(w, "bet-log"), correlationId: "corr-worker-1" });
+      await run(command(w, { amount: "30.00", externalTransactionId: "bet-log" }));
+      await worker().runOnce();
+
+      expect(lines.find((l) => l.msg === "pending reference resolved")).toMatchObject({
+        transactionId: refund.transactionId,
+        walletId: w.walletId,
+        providerId: "provider-a",
+        correlationId: "corr-worker-1",
+      });
+    } finally {
+      Logger.overrideLogger(new ConsoleLogger());
+    }
   });
 });

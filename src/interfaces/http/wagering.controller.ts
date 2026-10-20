@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, HttpStatus, Inject, Param, Post, Res, UseGuards } from "@nestjs/common";
 import type { Response } from "express";
 import { InvalidRequestError } from "../../application/errors";
+import { currentContext } from "../../infrastructure/observability/context";
 import { WalletQueries } from "../../application/queries/wallet-queries";
 import {
   ProcessWagerTransactionUseCase,
@@ -84,5 +85,7 @@ function toCommand(idempotencyKey: string, body: unknown): SubmitWagerCommand {
     kind: b.kind as string,
     money: b.money as SubmitWagerCommand["money"],
     referenceExternalTransactionId: b.referenceExternalTransactionId as string | undefined,
+    // aberto pelo CorrelationMiddleware: o X-Correlation-Id do provedor ou um gerado
+    correlationId: currentContext().correlationId,
   };
 }
