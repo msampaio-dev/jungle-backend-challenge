@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { defineConfig } from "@mikro-orm/postgresql";
 import { Migrator } from "@mikro-orm/migrations";
 import { LedgerEntryRecordSchema, WagerTransactionRecordSchema, WalletRecordSchema } from "./records";
@@ -13,6 +14,14 @@ import { Migration20261020070000ResolutionFailures } from "./migrations/Migratio
 import { Migration20261020080000CorrelationId } from "./migrations/Migration20261020080000CorrelationId";
 import { Migration20261021000000PendingByReferenceIndex } from "./migrations/Migration20261021000000PendingByReferenceIndex";
 
+// Logs do MikroORM e do knex (que escreve direto no console, colorido) passam
+// pelo logger da aplicação, para saírem em JSON como todo o resto.
+const ANSI_COLORS = /\u001b\[[0-9;]*m/g;
+const MAX_LOG_LENGTH = 500;
+const plain = (message: unknown) => String(message).replace(ANSI_COLORS, "").slice(0, MAX_LOG_LENGTH);
+const ormLogger = new Logger("MikroORM");
+const knexLogger = new Logger("Knex");
+
 export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
   return defineConfig({
     clientUrl,
@@ -20,6 +29,15 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
     extensions: [Migrator],
     forceUtcTimezone: true,
     pool: { min: 0, max: Number(process.env.DATABASE_POOL_MAX ?? 10) },
+    logger: (message) => ormLogger.log({ msg: plain(message) }),
+    driverOptions: {
+      log: {
+        warn: (message: unknown) => knexLogger.warn({ msg: plain(message) }),
+        error: (message: unknown) => knexLogger.error({ msg: plain(message) }),
+        deprecate: (message: unknown) => knexLogger.warn({ msg: plain(message) }),
+        debug: () => {}, // debug do knex traz SQL com valores: nunca vai para o log
+      },
+    },
     migrations: {
       // lista explícita: a ordem fica no código, sem varrer pasta em runtime
       migrationsList: [
