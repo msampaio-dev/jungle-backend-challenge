@@ -7,6 +7,7 @@ import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
+import { describeError } from "../../infrastructure/observability/json-logger";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import type { ProcessWagerTransactionUseCase } from "./process-wager-transaction.use-case";
@@ -126,7 +127,7 @@ export class PendingReferenceWorker {
    */
   private async handleFailure(lease: Lease, error: unknown): Promise<PendingOutcome> {
     const message = (error as Error)?.message ?? String(error);
-    const log = { transactionId: lease.id, error: message };
+    const log = { transactionId: lease.id, error: describeError(error) };
     try {
       if (classifyError(error) === ErrorKind.Transient) {
         this.logger.warn({ msg: "pending reference resolution hit a transient error", ...log });
@@ -140,7 +141,7 @@ export class PendingReferenceWorker {
       return await this.giveUp(lease);
     } catch (bookkeepingError) {
       // nem registrar deu certo (banco fora?): o aluguel vence e tenta de novo
-      this.logger.error({ msg: "could not record resolution failure", ...log, cause: (bookkeepingError as Error).message });
+      this.logger.error({ msg: "could not record resolution failure", ...log, cause: describeError(bookkeepingError) });
       return "failed";
     }
   }
@@ -186,7 +187,7 @@ export class PendingReferenceWorker {
       try {
         full = (await this.runOnce()).length === this.options.batchSize;
       } catch (error) {
-        this.logger.error({ msg: "pending reference round failed", error: (error as Error).message });
+        this.logger.error({ msg: "pending reference round failed", error: describeError(error) });
       }
       if (!full && this.running) await this.sleep(this.options.idleDelayMs);
     }

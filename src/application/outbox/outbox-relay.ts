@@ -2,6 +2,7 @@ import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
+import { describeError } from "../../infrastructure/observability/json-logger";
 import type { EventPublisher } from "./event-publisher";
 
 export interface OutboxRelayOptions {
@@ -91,7 +92,7 @@ export class OutboxRelay {
         full = published + failed === this.options.batchSize;
       } catch (error) {
         // banco fora do ar, por exemplo: tenta de novo na próxima rodada
-        this.logger.error({ msg: "outbox relay round failed", error: (error as Error).message });
+        this.logger.error({ msg: "outbox relay round failed", error: describeError(error) });
       }
       // lote cheio: provavelmente tem mais, não espera
       if (!full && this.running) await this.sleep(this.options.idleDelayMs);

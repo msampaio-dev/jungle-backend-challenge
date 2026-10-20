@@ -2,6 +2,7 @@ import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpSta
 import type { Response } from "express";
 import { classifyError, ErrorKind, errorCode } from "../../application/error-kind";
 import { ApplicationError } from "../../application/errors";
+import { describeError } from "../../infrastructure/observability/json-logger";
 
 const STATUS_BY_KIND: Record<ErrorKind, number> = {
   [ErrorKind.InvalidInput]: HttpStatus.BAD_REQUEST,
@@ -34,7 +35,7 @@ export class ErrorFilter implements ExceptionFilter {
       response.setHeader("Retry-After", "1");
     }
     if (kind === ErrorKind.Unexpected || kind === ErrorKind.Transient) {
-      this.logger.error({ msg: "request failed", kind, error: (error as Error)?.message });
+      this.logger.error({ msg: "request failed", kind, error: describeError(error) });
     }
 
     // mensagem interna não vaza em erro inesperado nem de infraestrutura

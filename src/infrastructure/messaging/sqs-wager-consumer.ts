@@ -20,6 +20,7 @@ import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
+import { describeError } from "../observability/json-logger";
 
 export interface SqsConsumerOptions {
   queueUrl: string;
@@ -151,7 +152,7 @@ export class SqsWagerConsumer {
         return await this.retryLater(message, error, { sqsMessageId: message.MessageId });
       } catch (visibilityError) {
         // nem o SQS respondeu: a mensagem volta sozinha quando a visibilidade expirar
-        this.logger.error({ msg: "could not schedule retry", sqsMessageId: message.MessageId, error: (visibilityError as Error).message });
+        this.logger.error({ msg: "could not schedule retry", sqsMessageId: message.MessageId, error: describeError(visibilityError) });
         return "retry";
       }
     }
@@ -210,7 +211,7 @@ export class SqsWagerConsumer {
     try {
       await this.ack(message);
     } catch (error) {
-      this.logger.warn({ msg: "ack failed after commit; redelivery will be acked as duplicate", ...log, error: (error as Error).message });
+      this.logger.warn({ msg: "ack failed after commit; redelivery will be acked as duplicate", ...log, error: describeError(error) });
     }
     this.logger.log({ msg: "message processed", ...log, transactionId: result.transactionId, status: result.status });
     return "processed";
@@ -252,7 +253,7 @@ export class SqsWagerConsumer {
       try {
         await this.pollOnce();
       } catch (error) {
-        this.logger.error({ msg: "sqs poll failed", error: (error as Error).message });
+        this.logger.error({ msg: "sqs poll failed", error: describeError(error) });
         if (this.running) await Bun.sleep(1_000);
       }
     }
