@@ -19,6 +19,7 @@ import { DEFAULT_CONSUMER_OPTIONS, SqsWagerConsumer } from "./sqs-wager-consumer
               useCase,
               {
                 ...DEFAULT_CONSUMER_OPTIONS,
+                concurrency: Number(process.env.SQS_CONSUMER_CONCURRENCY ?? DEFAULT_CONSUMER_OPTIONS.concurrency),
                 queueUrl: requiredEnv("SQS_QUEUE_URL"),
                 dlqUrl: requiredEnv("SQS_DLQ_URL"),
               },

@@ -132,6 +132,7 @@ describe("consumidor SQS", () => {
       backoffBaseSeconds: 0,
       backoffMaxSeconds: 0,
       pollFailureBackoff: fast,
+      concurrency: 1, // espaçamento de um leitor só
     });
     consumer.start();
     await Bun.sleep(WINDOW_MS);
@@ -139,6 +140,35 @@ describe("consumidor SQS", () => {
 
     expect(receives).toBeGreaterThanOrEqual(3);
     expect(receives).toBeLessThanOrEqual(10);
+    await main.delete();
+    await dlq.delete();
+  });
+
+  test("vários leitores com o SQS fora não multiplicam as linhas de log", async () => {
+    captureLogs();
+    const dlq = await createTestQueue("backoff5-dlq");
+    const main = await createTestQueue("backoff5-main");
+    let receives = 0;
+    const downClient = {
+      send: (cmd: unknown, opts?: unknown) => {
+        if (!(cmd instanceof ReceiveMessageCommand)) return main.client.send(cmd as never, opts as never);
+        receives++;
+        return Promise.reject(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+      },
+    } as unknown as SQSClient;
+    const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm), {
+      queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "backoff5", waitTimeSeconds: 1,
+      maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0, pollFailureBackoff: fast, concurrency: 5,
+    });
+    consumer.start();
+    await Bun.sleep(WINDOW_MS);
+    await consumer.stop();
+
+    // regra do FailureBackoff, compartilhado: uma linha por patamar (20, 40, 80, 160ms = 4)
+    // e, no teto, uma a cada 10 falhas. Uma por leitor por falha daria ~receives linhas.
+    const logged = lines.filter((l) => l.msg === "sqs poll failed").length;
+    expect(receives).toBeGreaterThan(10);
+    expect(logged).toBeLessThanOrEqual(4 + Math.ceil(receives / 10));
     await main.delete();
     await dlq.delete();
   });

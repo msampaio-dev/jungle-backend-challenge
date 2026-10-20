@@ -40,19 +40,29 @@ export interface SqsConsumerOptions {
   /** invisibilidade após falha transitória: base * 2^(entrega-1), até o máximo */
   backoffBaseSeconds: number;
   backoffMaxSeconds: number;
-  /** espera crescente entre leituras que falham (SQS fora; padrão: 1s, 2s, 4s... até 30s) */
+  /** espera crescente entre leituras que falham (SQS fora; padrão: 1s, 2s, 4s... até 10s) */
   pollFailureBackoff?: FailureBackoffOptions;
+  /** leitores em paralelo; cada um segura no máximo uma mensagem por vez (padrão 5) */
+  concurrency?: number;
 }
 
+/**
+ * 8 tentativas com espera 2, 4, 8, 16, 32, 60, 60s: ~3 min antes da DLQ.
+ * Cobre um failover típico de banco (o desafio diz que ele pode ficar
+ * temporariamente indisponível) sem virar trabalho manual de reprocessar
+ * a DLQ. A política da fila (maxReceiveCount) fica acima disso, como rede
+ * de segurança para o caso de o processo morrer a cada tentativa.
+ */
 export const DEFAULT_CONSUMER_OPTIONS = {
   consumerName: "wager-transactions-consumer",
   waitTimeSeconds: 10,
-  maxAttempts: 5,
+  maxAttempts: 8,
   backoffBaseSeconds: 2,
   backoffMaxSeconds: 60,
+  concurrency: 5,
 } satisfies Partial<SqsConsumerOptions>;
 
-export type Outcome = "processed" | "duplicate" | "retry" | "dead-letter" | "released";
+export type Outcome = "processed" | "duplicate" | "retry" | "dead-letter";
 
 interface Envelope {
   messageId: string;
@@ -66,14 +76,22 @@ class InvalidEnvelopeError extends Error {}
  * Consome wager-transactions.fifo usando o MESMO use case da API HTTP.
  * Ack só depois do commit; a inbox (gravada na mesma transação) torna a
  * reentrega inofensiva.
+ *
+ * Vários leitores, cada um lendo UMA mensagem por vez. A FIFO nunca entrega
+ * a próxima mensagem de uma wallet enquanto a anterior está pendente, então
+ * ela mesma garante a ordem por wallet e que uma wallet nunca está com dois
+ * leitores. Ler em lote obrigava a devolver as mensagens de trás quando a
+ * da frente entrava em retry, e cada devolução contava como entrega: elas
+ * gastavam o limite sem nunca serem tentadas e acabavam na DLQ.
  */
 export class SqsWagerConsumer {
   private readonly logger = new Logger(SqsWagerConsumer.name);
   private running = false;
   private stopping = false;
-  private loop: Promise<void> | undefined;
-  private abort: AbortController | undefined;
-  private wake: (() => void) | undefined;
+  private readers: Promise<void>[] = [];
+  private readonly wakes = new Set<() => void>();
+  /** compartilhada pelos leitores: com o SQS fora, 5 leitores não viram 5x o log */
+  private readonly pollBackoff: FailureBackoff;
 
   constructor(
     private readonly client: SQSClient,
@@ -81,79 +99,61 @@ export class SqsWagerConsumer {
     private readonly useCase: ProcessWagerTransactionUseCase,
     private readonly options: SqsConsumerOptions,
     private readonly inbox = new InboxRepository(),
-  ) {}
+  ) {
+    // NaN ou 0 criaria zero leitores: um consumidor que sobe e nunca lê nada, sem erro
+    const concurrency = options.concurrency ?? DEFAULT_CONSUMER_OPTIONS.concurrency;
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new Error(`invalid consumer concurrency: ${options.concurrency}`);
+    }
+    this.pollBackoff = new FailureBackoff(options.pollFailureBackoff ?? DEFAULT_FAILURE_BACKOFF);
+  }
 
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.stopping = false; // sem isto, depois de um stop() tudo seria devolvido à fila para sempre
-    this.loop = this.run();
+    this.stopping = false;
+    const concurrency = this.options.concurrency ?? DEFAULT_CONSUMER_OPTIONS.concurrency;
+    this.readers = Array.from({ length: concurrency }, () => this.readLoop());
   }
 
   /**
-   * SIGTERM: para de buscar, deixa terminar o que já começou (commit + ack)
-   * e devolve à fila, com visibilidade zero, o que ainda não começou.
+   * SIGTERM: para de buscar e deixa cada leitor terminar a mensagem que está
+   * processando (commit + ack). A leitura em andamento (long polling) NÃO é
+   * cortada: o SQS não sabe que a conexão caiu e entregaria a mensagem que
+   * chegasse naquele instante a ninguém, deixando-a presa pela visibilidade
+   * (30s) e gastando uma entrega. Em vez disso, a leitura termina (no máximo
+   * waitTimeSeconds) e o que chegar durante a parada volta à fila na hora.
    */
   async stop(): Promise<void> {
     this.running = false;
     this.stopping = true;
-    this.abort?.abort();
-    this.wake?.(); // interrompe a espera entre tentativas, que pode chegar a 30s
-    await this.loop;
+    for (const wake of this.wakes) wake(); // corta só a espera entre tentativas
+    await Promise.all(this.readers);
   }
 
-  /** Uma leitura da fila e o processamento do lote. */
+  /** Uma leitura de UMA mensagem e o processamento dela (0 ou 1 resultado). */
   async pollOnce(): Promise<Outcome[]> {
-    this.abort = new AbortController();
-    let messages: Message[];
-    try {
-      const response = await this.client.send(
-        new ReceiveMessageCommand({
-          QueueUrl: this.options.queueUrl,
-          MaxNumberOfMessages: 10,
-          WaitTimeSeconds: this.options.waitTimeSeconds,
-          MessageSystemAttributeNames: ["ApproximateReceiveCount", "MessageGroupId"],
-        }),
-        { abortSignal: this.abort.signal },
-      );
-      messages = response.Messages ?? [];
-    } catch (error) {
-      if (this.abort.signal.aborted) return [];
-      throw error;
-    }
-    return this.handleBatch(messages);
-  }
-
-  /** Mesmo grupo (wallet) em sequência para manter a ordem; grupos diferentes em paralelo. */
-  async handleBatch(messages: Message[]): Promise<Outcome[]> {
-    const groups = new Map<string, Message[]>();
-    for (const m of messages) {
-      const group = m.Attributes?.MessageGroupId ?? "default";
-      groups.set(group, [...(groups.get(group) ?? []), m]);
-    }
-
-    const outcomes = await Promise.all(
-      [...groups.values()].map(async (group) => {
-        const results: Outcome[] = [];
-        let blocked = false;
-        for (const message of group) {
-          // Se uma mensagem do grupo voltou para retry, as seguintes não podem
-          // passar na frente: voltam para a fila e a FIFO as entrega depois dela.
-          const outcome = this.stopping || blocked ? await this.release(message) : await this.handleSafely(message);
-          if (outcome === "retry") blocked = true;
-          results.push(outcome);
-        }
-        return results;
+    const response = await this.client.send(
+      new ReceiveMessageCommand({
+        QueueUrl: this.options.queueUrl,
+        MaxNumberOfMessages: 1,
+        WaitTimeSeconds: this.options.waitTimeSeconds,
+        MessageSystemAttributeNames: ["ApproximateReceiveCount", "MessageGroupId"],
       }),
     );
-    return outcomes.flat();
+    const [message] = response.Messages ?? [];
+    if (!message) return [];
+    if (this.stopping) {
+      // chegou durante a parada: devolve já, para outra instância pegar sem esperar
+      await this.setVisibility(message, 0);
+      return [];
+    }
+    return [await this.handleSafely(message)];
   }
 
   /**
-   * Nenhum erro de uma mensagem derruba o lote: falha inesperada fora do
-   * use case (ex.: banco fora ao consultar a inbox) também vira retry.
-   * Sem isso, a exceção abortava o Promise.all e os outros grupos seguiam
-   * rodando sem ninguém esperar por eles.
+   * Nenhum erro escapa do processamento de uma mensagem: falha inesperada
+   * fora do use case (ex.: banco fora ao consultar a inbox) também vira retry.
    */
   private async handleSafely(message: Message): Promise<Outcome> {
     try {
@@ -270,8 +270,8 @@ export class SqsWagerConsumer {
     return "retry";
   }
 
-  private async run(): Promise<void> {
-    const backoff = new FailureBackoff(this.options.pollFailureBackoff ?? DEFAULT_FAILURE_BACKOFF);
+  private async readLoop(): Promise<void> {
+    const backoff = this.pollBackoff;
     while (this.running) {
       try {
         await this.pollOnce();
@@ -295,11 +295,13 @@ export class SqsWagerConsumer {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-      this.wake = () => {
+      const wake = () => {
         clearTimeout(timer);
+        this.wakes.delete(wake);
         resolve();
       };
+      const timer = setTimeout(wake, ms);
+      this.wakes.add(wake);
     });
   }
 
@@ -327,12 +329,6 @@ export class SqsWagerConsumer {
     metrics.deadLettered.inc({ reason: code });
     this.logger.error({ msg: "message sent to DLQ", sqsMessageId: message.MessageId, errorCode: code });
     return "dead-letter";
-  }
-
-  /** Devolve à fila sem esperar o fim da visibilidade (usado no shutdown). */
-  private async release(message: Message): Promise<Outcome> {
-    await this.setVisibility(message, 0);
-    return "released";
   }
 
   private async setVisibility(message: Message, seconds: number): Promise<void> {

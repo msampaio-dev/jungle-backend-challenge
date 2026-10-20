@@ -215,6 +215,80 @@ describe("consumidor SQS", () => {
     expect((await snapshot(orm, w.walletId)).debits).toBe(1);
   });
 
+  test("mensagem que só esperou a vez não gasta entregas: chega à primeira tentativa com contador 1", async () => {
+    const lines: Array<Record<string, any>> = [];
+    Logger.overrideLogger(new JsonLogger((line) => lines.push(JSON.parse(line))));
+    try {
+      options.maxAttempts = 8;
+      const w = await createWallet(orm, "100.00");
+      const msgs = ["1.00", "2.00", "3.00"].map((amount) => envelope(w, { amount }));
+      for (const m of msgs) await main.send(m, w.walletId);
+
+      // banco fora nas 3 primeiras tentativas (todas da primeira mensagem)
+      const real = useCase();
+      let calls = 0;
+      const flaky = {
+        execute: async (...args: Parameters<ProcessWagerTransactionUseCase["execute"]>) => {
+          if (++calls <= 3) throw new ConnectionException(new Error("db down"));
+          return real.execute(...args);
+        },
+      };
+      await consumeAll(consumer(flaky));
+
+      const processed = (id: string) => lines.find((l) => l.msg === "message processed" && l.messageId === id);
+      expect(processed(msgs[0]!.messageId)?.receiveCount).toBe(4); // 3 falhas + o sucesso
+      expect(processed(msgs[1]!.messageId)?.receiveCount).toBe(1); // só esperou: nenhuma entrega gasta
+      expect(processed(msgs[2]!.messageId)?.receiveCount).toBe(1);
+      expect(await dlq.receiveAll()).toHaveLength(0);
+    } finally {
+      Logger.overrideLogger(new ConsoleLogger());
+    }
+  });
+
+  test.each([0, -1, 1.5, Number.NaN])("número de leitores inválido (%p) é recusado ao montar", (concurrency) => {
+    expect(() => new SqsWagerConsumer(main.client, orm, useCase(), { ...options, concurrency })).toThrow(/invalid consumer concurrency/);
+  });
+
+  test("leitores em paralelo: wallets diferentes ao mesmo tempo, a mesma wallet uma de cada vez", async () => {
+    const wallets = await Promise.all([1, 2, 3].map(() => createWallet(orm, "100.00")));
+    for (const w of wallets) for (const amount of ["1.00", "2.00"]) await main.send(envelope(w, { amount }), w.walletId);
+
+    const real = useCase();
+    const running = new Map<string, number>();
+    let maxSameWallet = 0;
+    let maxOverall = 0;
+    let overall = 0;
+    const slow = {
+      async execute(...args: Parameters<ProcessWagerTransactionUseCase["execute"]>) {
+        const walletId = args[0].walletId;
+        running.set(walletId, (running.get(walletId) ?? 0) + 1);
+        overall++;
+        maxSameWallet = Math.max(maxSameWallet, running.get(walletId)!);
+        maxOverall = Math.max(maxOverall, overall);
+        try {
+          await Bun.sleep(200);
+          return await real.execute(...args);
+        } finally {
+          running.set(walletId, running.get(walletId)! - 1);
+          overall--;
+        }
+      },
+    };
+    const worker = new SqsWagerConsumer(main.client, orm, slow as ProcessWagerTransactionUseCase, { ...options, concurrency: 3 });
+    worker.start();
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const states = await Promise.all(wallets.map((w) => snapshot(orm, w.walletId)));
+      if (states.every((st) => st.debits === 2)) break;
+      await Bun.sleep(100);
+    }
+    await worker.stop();
+
+    expect(maxOverall).toBeGreaterThanOrEqual(2); // wallets diferentes em paralelo
+    expect(maxSameWallet).toBe(1); // nunca duas da mesma wallet ao mesmo tempo
+    for (const w of wallets) expect((await snapshot(orm, w.walletId)).debits).toBe(2);
+  });
+
   test("worker morto depois do commit e antes do ack: reentrega não duplica", async () => {
     const w = await createWallet(orm, "100.00");
     const msg = envelope(w, { amount: "25.00" });
@@ -269,6 +343,24 @@ describe("consumidor SQS", () => {
     while ((await snapshot(orm, w.walletId)).debits === 0 && Date.now() < deadline) await Bun.sleep(200);
     await worker.stop();
 
+    expect((await snapshot(orm, w.walletId)).debits).toBe(1);
+  });
+
+  test("parar durante a espera por mensagens não engole a que chegar nesse instante", async () => {
+    const w = await createWallet(orm, "100.00");
+    const worker = new SqsWagerConsumer(main.client, orm, useCase(), { ...options, waitTimeSeconds: 2, concurrency: 2 });
+    worker.start();
+    await Bun.sleep(200); // os dois leitores estão esperando mensagens (long polling)
+
+    const stopping = worker.stop();
+    await main.send(envelope(w, { amount: "10.00" }), w.walletId); // chega enquanto eles param
+    await stopping;
+
+    // a mensagem tem que estar disponível de novo na hora (não presa pela visibilidade de 2s)
+    const started = performance.now();
+    const outcomes = await consumer().pollOnce();
+    expect(outcomes).toEqual(["processed"]);
+    expect(performance.now() - started).toBeLessThan(1_500);
     expect((await snapshot(orm, w.walletId)).debits).toBe(1);
   });
 
