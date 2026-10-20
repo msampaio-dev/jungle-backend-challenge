@@ -44,6 +44,14 @@ export interface WagerResult {
   failureCode?: FailureCode | undefined;
 }
 
+export interface ExecuteOptions {
+  /**
+   * Trabalho extra que precisa ser confirmado junto com a operação (o
+   * consumidor SQS grava a inbox aqui). Roda também no caminho de replay.
+   */
+  inTransaction?: (em: EntityManager) => Promise<void>;
+}
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const IDEMPOTENCY_CONSTRAINTS = /wager_tx_idempotency_uq|wager_tx_external_id_uq/;
 
@@ -55,14 +63,18 @@ export class ProcessWagerTransactionUseCase {
     private readonly outbox = new OutboxRepository(),
   ) {}
 
-  async execute(command: SubmitWagerCommand): Promise<WagerResult> {
+  async execute(command: SubmitWagerCommand, options: ExecuteOptions = {}): Promise<WagerResult> {
     // Segunda volta só acontece se outra instância gravou a mesma chave entre
     // a nossa leitura e o nosso INSERT: aí a releitura vira replay ou conflito.
     for (let attempt = 1; ; attempt++) {
       const tx = this.build(command);
       try {
         const trace = { correlationId: command.correlationId ?? tx.id, causationId: command.causationId };
-        return await this.orm.em.fork().transactional((em) => this.process(em, tx, trace));
+        return await this.orm.em.fork().transactional(async (em) => {
+          const result = await this.process(em, tx, trace);
+          await options.inTransaction?.(em);
+          return result;
+        });
       } catch (error) {
         const raced = error instanceof UniqueConstraintViolationException && IDEMPOTENCY_CONSTRAINTS.test(error.message);
         if (raced && attempt === 1) continue;

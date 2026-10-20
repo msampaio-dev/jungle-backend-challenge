@@ -4,6 +4,7 @@ import { LedgerEntryRecordSchema, WagerTransactionRecordSchema, WalletRecordSche
 import { Migration20261019230000WalletsAndLedger } from "./migrations/Migration20261019230000WalletsAndLedger";
 import { Migration20261020000000WagerTransactions } from "./migrations/Migration20261020000000WagerTransactions";
 import { Migration20261020010000Outbox } from "./migrations/Migration20261020010000Outbox";
+import { Migration20261020020000Inbox } from "./migrations/Migration20261020020000Inbox";
 
 export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
   return defineConfig({
@@ -18,6 +19,7 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
         { name: "Migration20261019230000WalletsAndLedger", class: Migration20261019230000WalletsAndLedger },
         { name: "Migration20261020000000WagerTransactions", class: Migration20261020000000WagerTransactions },
         { name: "Migration20261020010000Outbox", class: Migration20261020010000Outbox },
+        { name: "Migration20261020020000Inbox", class: Migration20261020020000Inbox },
       ],
       transactional: true,
       allOrNothing: true,
