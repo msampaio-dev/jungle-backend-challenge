@@ -5,8 +5,10 @@ import { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import { Wallet } from "../../domain/wallet/wallet";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
-import { WalletAlreadyExistsError } from "../errors";
+import { InvalidRequestError, WalletAlreadyExistsError } from "../errors";
 import { payloadHash } from "../wagering/payload-hash";
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface CreateWalletCommand {
   playerId: string;
@@ -22,6 +24,9 @@ export class CreateWalletUseCase {
 
   /** Wallet, transação OPENING e lançamento CREDIT na mesma transação SQL. */
   async execute(command: CreateWalletCommand): Promise<Wallet> {
+    if (typeof command.playerId !== "string" || !UUID.test(command.playerId)) {
+      throw new InvalidRequestError("playerId must be a UUID");
+    }
     const initialBalance = Money.from(command.initialBalance);
     const now = new Date();
     const walletId = Bun.randomUUIDv7();

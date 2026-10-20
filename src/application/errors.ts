@@ -12,6 +12,15 @@ export abstract class ApplicationError extends Error {
   }
 }
 
+/** Parâmetro de consulta ou cabeçalho mal formado (id que não é UUID, cursor inválido...). */
+export class InvalidRequestError extends ApplicationError {
+  readonly code = "INVALID_REQUEST";
+}
+
+export class TransactionNotFoundError extends ApplicationError {
+  readonly code = "TRANSACTION_NOT_FOUND";
+}
+
 export class WalletNotFoundError extends ApplicationError {
   readonly code = "WALLET_NOT_FOUND";
 }

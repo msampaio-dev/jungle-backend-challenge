@@ -69,6 +69,10 @@ export class ProcessWagerTransactionUseCase {
         throw new InvalidWagerTransactionError(`${field} must be a UUID`);
       }
     }
+    const reference = command.referenceExternalTransactionId;
+    if (reference !== undefined && (typeof reference !== "string" || reference.trim() === "")) {
+      throw new InvalidWagerTransactionError("referenceExternalTransactionId must be a non-empty string");
+    }
     const money = Money.from(command.money);
     const hash = payloadHash({
       providerId: command.providerId,
