@@ -15,11 +15,17 @@ function required(name: string): string {
     {
       provide: SqsWagerConsumer,
       useFactory: (orm: MikroORM, useCase: ProcessWagerTransactionUseCase) =>
-        new SqsWagerConsumer(createSqsClient(), orm, useCase, {
-          ...DEFAULT_CONSUMER_OPTIONS,
-          queueUrl: required("SQS_QUEUE_URL"),
-          dlqUrl: required("SQS_DLQ_URL"),
-        }),
+        new SqsWagerConsumer(
+          // o long polling segura a chamada por até waitTimeSeconds: o timeout precisa passar disso
+          createSqsClient({ requestTimeoutMs: (DEFAULT_CONSUMER_OPTIONS.waitTimeSeconds + 5) * 1_000 }),
+          orm,
+          useCase,
+          {
+            ...DEFAULT_CONSUMER_OPTIONS,
+            queueUrl: required("SQS_QUEUE_URL"),
+            dlqUrl: required("SQS_DLQ_URL"),
+          },
+        ),
       inject: [MikroORM, ProcessWagerTransactionUseCase],
     },
   ],
