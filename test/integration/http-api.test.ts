@@ -43,6 +43,14 @@ describe("wallets", () => {
     expect(res.body).toMatchObject({ playerId, balance: { amount: "1000.00", currency: "BRL" }, version: 1 });
   });
 
+  test("playerId em maiúsculas é normalizado: POST e GET devolvem o mesmo", async () => {
+    const playerId = crypto.randomUUID().toUpperCase();
+    const created = await api.call("POST", "/wallets", { playerId, initialBalance: { amount: "1.00", currency: "BRL" } });
+    const fetched = await api.call("GET", `/wallets/${created.body.id}`);
+    expect(created.body.playerId).toBe(playerId.toLowerCase());
+    expect(fetched.body.playerId).toBe(created.body.playerId);
+  });
+
   test("wallet duplicada é 409", async () => {
     const w = await newWallet();
     const res = await api.call("POST", "/wallets", { playerId: w.playerId, initialBalance: { amount: "1.00", currency: "BRL" } });

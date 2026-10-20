@@ -32,6 +32,9 @@ export class CreateWalletUseCase {
     if (typeof command.playerId !== "string" || !UUID.test(command.playerId)) {
       throw new InvalidRequestError("playerId must be a UUID");
     }
+    // UUID é igual em maiúsculas ou minúsculas; normaliza para a resposta e os
+    // eventos saírem iguais ao que o banco devolve (o tipo uuid sai minúsculo)
+    const playerId = command.playerId.toLowerCase();
     const initialBalance = Money.from(command.initialBalance);
     const now = new Date();
     const walletId = Bun.randomUUIDv7();
@@ -39,7 +42,7 @@ export class CreateWalletUseCase {
 
     const { wallet, openingEntry } = Wallet.open({
       id: walletId,
-      playerId: command.playerId,
+      playerId,
       initialBalance,
       openingTransactionId,
       openingEntryId: Bun.randomUUIDv7(),
@@ -53,9 +56,9 @@ export class CreateWalletUseCase {
           const opening = WagerTransaction.opening({
             id: openingTransactionId,
             walletId,
-            playerId: command.playerId,
+            playerId,
             money: initialBalance,
-            payloadHash: payloadHash({ kind: "OPENING", walletId, playerId: command.playerId, money: initialBalance.toJSON() }),
+            payloadHash: payloadHash({ kind: "OPENING", walletId, playerId, money: initialBalance.toJSON() }),
             at: now,
           });
           await this.transactions.insert(em, opening, now);
@@ -70,7 +73,7 @@ export class CreateWalletUseCase {
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException && error.message.includes("wallets_player_currency_uq")) {
         throw new WalletAlreadyExistsError(
-          `player ${command.playerId} already has a ${initialBalance.currency} wallet`,
+          `player ${playerId} already has a ${initialBalance.currency} wallet`,
         );
       }
       throw error;
