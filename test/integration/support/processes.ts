@@ -82,9 +82,11 @@ export async function callWithRetry(
   timeoutMs = 30_000,
 ): Promise<ApiResult> {
   const deadline = Date.now() + timeoutMs;
+  // cada chamada começa numa instância aleatória: a carga se espalha por todas
+  const start = Math.floor(Math.random() * 1_000);
   for (let attempt = 1; ; attempt++) {
     const urls = targets();
-    const url = urls[(attempt - 1) % urls.length]!;
+    const url = urls[(start + attempt - 1) % urls.length]!;
     try {
       const res = await fetch(`${url}${path}`, {
         method,
