@@ -118,6 +118,16 @@ describe("wallet_ledger_entries", () => {
     ).rejects.toThrow(/amount_check/);
   });
 
+  test("lançamento não pode apontar para transação de outra carteira", async () => {
+    const otherWallet = crypto.randomUUID();
+    const otherPlayer = crypto.randomUUID();
+    await insertWallet(otherWallet, otherPlayer);
+    const foreignTx = crypto.randomUUID();
+    await insertTransaction(foreignTx, { wallet_id: otherWallet, player_id: otherPlayer });
+
+    await expect(insertEntry({ transactionId: foreignTx })).rejects.toThrow(/ledger_transaction_wallet_fk/);
+  });
+
   test("moeda diferente da carteira é recusada pela FK composta", async () => {
     await expect(insertEntry({ transactionId: crypto.randomUUID(), currency: "USD" })).rejects.toThrow(
       /ledger_wallet_currency_fk/,
