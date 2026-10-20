@@ -1,5 +1,6 @@
 import {
   CreateQueueCommand,
+  DeleteMessageCommand,
   DeleteQueueCommand,
   type Message,
   ReceiveMessageCommand,
@@ -39,8 +40,23 @@ export async function createTestQueue(prefix: string, attributes: Record<string,
     client,
     queueUrl,
     receiveAll,
+    /**
+     * Consome a fila inteira (lê e APAGA). Numa FIFO, sem apagar, as mensagens
+     * seguintes de cada grupo nunca seriam entregues e a leitura veria só as primeiras.
+     */
     async drain(): Promise<Array<Record<string, any>>> {
-      return (await receiveAll()).map((m) => JSON.parse(m.Body!));
+      const bodies: Array<Record<string, any>> = [];
+      for (let empty = 0; empty < 2; ) {
+        const { Messages = [] } = await client.send(
+          new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1 }),
+        );
+        if (Messages.length === 0) empty++;
+        for (const m of Messages) {
+          bodies.push(JSON.parse(m.Body!));
+          await client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: m.ReceiptHandle }));
+        }
+      }
+      return bodies;
     },
     async send(body: unknown, groupId: string): Promise<void> {
       await client.send(
