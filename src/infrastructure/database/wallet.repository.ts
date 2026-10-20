@@ -1,6 +1,7 @@
 import { LockMode } from "@mikro-orm/core";
 import type { EntityManager } from "@mikro-orm/postgresql";
 import { Money } from "../../domain/shared/money";
+import { metrics } from "../observability/metrics";
 import { Wallet } from "../../domain/wallet/wallet";
 import { LedgerDirection, WalletLedgerEntry } from "../../domain/wallet/wallet-ledger-entry";
 import { LedgerEntryRecord, WalletRecord } from "./records";
@@ -45,12 +46,17 @@ export class WalletRepository {
    */
   async lockById(em: EntityManager, id: string): Promise<Wallet | null> {
     await em.execute(`set local lock_timeout = ${this.lockTimeoutMs}`);
-    const record = await em.findOne(
-      WalletRecord,
-      { id },
-      { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true },
-    );
-    return record ? toWallet(record) : null;
+    const stopTimer = metrics.lockWait.startTimer();
+    try {
+      const record = await em.findOne(
+        WalletRecord,
+        { id },
+        { lockMode: LockMode.PESSIMISTIC_WRITE, refresh: true },
+      );
+      return record ? toWallet(record) : null;
+    } finally {
+      stopTimer(); // inclusive quando desiste por lock_timeout: a espera aconteceu
+    }
   }
 
   async insert(em: EntityManager, wallet: Wallet): Promise<void> {

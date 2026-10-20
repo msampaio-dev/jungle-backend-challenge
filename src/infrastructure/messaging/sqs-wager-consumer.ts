@@ -21,6 +21,7 @@ import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
 import { runWithContext } from "../observability/context";
+import { metrics } from "../observability/metrics";
 import { describeError } from "../observability/json-logger";
 
 export interface SqsConsumerOptions {
@@ -238,8 +239,10 @@ export class SqsWagerConsumer {
     log: Record<string, unknown>,
   ): Promise<Outcome> {
     if (known.payloadHash !== hash) {
+      metrics.duplicates.inc({ type: "message_id_conflict" });
       return this.deadLetter(message, "MESSAGE_ID_CONFLICT", "messageId was already used with a different payload");
     }
+    metrics.duplicates.inc({ type: "inbox_redelivery" });
     await this.ack(message);
     this.logger.log({ msg: "duplicate message acked", ...log });
     return "duplicate";
@@ -253,6 +256,7 @@ export class SqsWagerConsumer {
     }
     const delay = Math.min(this.options.backoffBaseSeconds * 2 ** (receiveCount - 1), this.options.backoffMaxSeconds);
     await this.setVisibility(message, delay);
+    metrics.retries.inc({ component: "sqs_consumer" });
     this.logger.warn({ msg: "transient failure, will retry", ...log, kind: classifyError(error), retryInSeconds: delay });
     return "retry";
   }
@@ -289,6 +293,7 @@ export class SqsWagerConsumer {
       }),
     );
     await this.ack(message);
+    metrics.deadLettered.inc({ reason: code });
     this.logger.error({ msg: "message sent to DLQ", sqsMessageId: message.MessageId, errorCode: code });
     return "dead-letter";
   }

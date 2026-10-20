@@ -3,6 +3,7 @@ import type { MikroORM } from "@mikro-orm/postgresql";
 import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { describeError } from "../../infrastructure/observability/json-logger";
+import { metrics } from "../../infrastructure/observability/metrics";
 import type { EventPublisher } from "./event-publisher";
 
 export interface OutboxRelayOptions {
@@ -49,11 +50,14 @@ export class OutboxRelay {
           await this.publisher.publish(message);
           message.markPublished(now);
           await this.outbox.save(em, message);
+          // occurred_at e now vêm do relógio do banco: o atraso é confiável
+          metrics.outboxPublishDelay.observe(Math.max(0, (now.getTime() - message.occurredAt.getTime()) / 1000));
           result.published++;
         } catch (error) {
           // conta a partir da falha: a publicação pode ter levado o timeout inteiro
           message.scheduleRetry(await databaseNow(em));
           await this.outbox.save(em, message, (error as Error).message);
+          metrics.retries.inc({ component: "outbox_publish" });
           result.failed++;
           this.logger.warn({
             msg: "outbox publish failed",

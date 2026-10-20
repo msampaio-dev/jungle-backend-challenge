@@ -7,6 +7,7 @@ import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../../infrastructure/database/clock";
 import { addToContext, runWithContext } from "../../infrastructure/observability/context";
+import { countLockConflict, metrics } from "../../infrastructure/observability/metrics";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { describeError } from "../../infrastructure/observability/json-logger";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
@@ -110,7 +111,11 @@ export class PendingReferenceWorker {
       await this.transactions.update(em, tx, now);
       if (entry) await this.wallets.saveMovement(em, wallet, expectedVersion, entry);
 
-      if (!tx.isTerminal()) return "rescheduled"; // reagendamento não gera evento
+      if (!tx.isTerminal()) {
+        metrics.retries.inc({ component: "pending_reference" });
+        return "rescheduled"; // reagendamento não gera evento
+      }
+      metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status });
 
       // em cadeia: um ROLLBACK pendente pode estar esperando por este REFUND
       await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
@@ -136,6 +141,7 @@ export class PendingReferenceWorker {
     const message = (error as Error)?.message ?? String(error);
     const log = { transactionId: lease.id, error: describeError(error) };
     try {
+      countLockConflict(error);
       if (classifyError(error) === ErrorKind.Transient) {
         this.logger.warn({ msg: "pending reference resolution hit a transient error", ...log });
         return "failed";
@@ -170,6 +176,7 @@ export class PendingReferenceWorker {
           OutboxMessage.enqueue(e),
         ),
       );
+      metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status });
       this.logger.error({ msg: "pending reference marked FAILED", transactionId: tx.id });
       return "gave-up";
     });

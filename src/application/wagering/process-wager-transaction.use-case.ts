@@ -31,6 +31,7 @@ import { WagerTransactionRepository } from "../../infrastructure/database/wager-
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { IdempotencyConflictError, WalletNotFoundError } from "../errors";
 import { addToContext } from "../../infrastructure/observability/context";
+import { countLockConflict, metrics } from "../../infrastructure/observability/metrics";
 import { payloadHash } from "./payload-hash";
 
 /** Entrada comum à API HTTP e ao consumidor SQS. */
@@ -112,7 +113,11 @@ export class ProcessWagerTransactionUseCase {
           return result;
         });
 
-        // depois do commit: o log nunca anuncia algo que não foi confirmado
+        // depois do commit: log e métricas nunca anunciam algo que não foi confirmado
+        const seconds = (performance.now() - startedAt) / 1000;
+        if (result.idempotentReplay) metrics.duplicates.inc({ type: "idempotent_replay" });
+        else metrics.transactions.inc({ channel, kind: prepared.kind, status: result.status });
+        metrics.processing.observe({ channel, outcome: result.idempotentReplay ? "replay" : result.status }, seconds);
         addToContext({ transactionId: result.transactionId });
         this.logger.log({
           msg: result.idempotentReplay ? "idempotent replay" : "wager transaction processed",
@@ -128,7 +133,12 @@ export class ProcessWagerTransactionUseCase {
         return result;
       } catch (error) {
         const raced = error instanceof UniqueConstraintViolationException && IDEMPOTENCY_CONSTRAINTS.test(error.message);
-        if (raced && attempt === 1) continue;
+        if (raced && attempt === 1) {
+          metrics.retries.inc({ component: "idempotency_race" });
+          continue;
+        }
+        countLockConflict(error);
+        metrics.processing.observe({ channel, outcome: "error" }, (performance.now() - startedAt) / 1000);
         throw error;
       }
     }
