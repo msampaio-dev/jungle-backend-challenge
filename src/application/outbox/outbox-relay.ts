@@ -4,12 +4,15 @@ import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { describeError } from "../../infrastructure/observability/json-logger";
 import { metrics } from "../../infrastructure/observability/metrics";
+import { DEFAULT_FAILURE_BACKOFF, FailureBackoff, type FailureBackoffOptions } from "../shared/failure-backoff";
 import type { EventPublisher } from "./event-publisher";
 
 export interface OutboxRelayOptions {
   batchSize: number;
   /** espera entre rodadas quando não há nada para publicar */
   idleDelayMs: number;
+  /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 30s) */
+  failureBackoff?: FailureBackoffOptions;
 }
 
 export interface BatchResult {
@@ -94,17 +97,28 @@ export class OutboxRelay {
   }
 
   private async run(): Promise<void> {
+    const backoff = new FailureBackoff(this.options.failureBackoff ?? DEFAULT_FAILURE_BACKOFF);
     while (this.running) {
-      let full = false;
+      let delayMs = this.options.idleDelayMs;
       try {
         const { published, failed } = await this.publishBatch();
-        full = published + failed === this.options.batchSize;
+        const failedRounds = backoff.succeeded();
+        if (failedRounds > 0) this.logger.log({ msg: "outbox relay recovered", failedRounds });
+        // lote cheio: provavelmente tem mais, não espera
+        if (published + failed === this.options.batchSize) delayMs = 0;
       } catch (error) {
-        // banco fora do ar, por exemplo: tenta de novo na próxima rodada
-        this.logger.error({ msg: "outbox relay round failed", error: describeError(error) });
+        // banco fora do ar, por exemplo: espera cada vez mais e loga só de vez em quando
+        delayMs = backoff.failed();
+        if (backoff.shouldLog()) {
+          this.logger.error({
+            msg: "outbox relay round failed",
+            error: describeError(error),
+            consecutiveFailures: backoff.consecutiveFailures,
+            retryInMs: delayMs,
+          });
+        }
       }
-      // lote cheio: provavelmente tem mais, não espera
-      if (!full && this.running) await this.sleep(this.options.idleDelayMs);
+      if (delayMs > 0 && this.running) await this.sleep(delayMs);
     }
   }
 

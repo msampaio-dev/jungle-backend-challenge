@@ -10,6 +10,11 @@ import { UniqueConstraintViolationException } from "@mikro-orm/core";
 import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { classifyError, ErrorKind, errorCode } from "../../application/error-kind";
+import {
+  DEFAULT_FAILURE_BACKOFF,
+  FailureBackoff,
+  type FailureBackoffOptions,
+} from "../../application/shared/failure-backoff";
 import type {
   ProcessWagerTransactionUseCase,
   SubmitWagerCommand,
@@ -35,6 +40,8 @@ export interface SqsConsumerOptions {
   /** invisibilidade após falha transitória: base * 2^(entrega-1), até o máximo */
   backoffBaseSeconds: number;
   backoffMaxSeconds: number;
+  /** espera crescente entre leituras que falham (SQS fora; padrão: 1s, 2s, 4s... até 30s) */
+  pollFailureBackoff?: FailureBackoffOptions;
 }
 
 export const DEFAULT_CONSUMER_OPTIONS = {
@@ -66,6 +73,7 @@ export class SqsWagerConsumer {
   private stopping = false;
   private loop: Promise<void> | undefined;
   private abort: AbortController | undefined;
+  private wake: (() => void) | undefined;
 
   constructor(
     private readonly client: SQSClient,
@@ -90,6 +98,7 @@ export class SqsWagerConsumer {
     this.running = false;
     this.stopping = true;
     this.abort?.abort();
+    this.wake?.(); // interrompe a espera entre tentativas, que pode chegar a 30s
     await this.loop;
   }
 
@@ -262,14 +271,36 @@ export class SqsWagerConsumer {
   }
 
   private async run(): Promise<void> {
+    const backoff = new FailureBackoff(this.options.pollFailureBackoff ?? DEFAULT_FAILURE_BACKOFF);
     while (this.running) {
       try {
         await this.pollOnce();
+        const failedRounds = backoff.succeeded();
+        if (failedRounds > 0) this.logger.log({ msg: "sqs consumer recovered", failedRounds });
       } catch (error) {
-        this.logger.error({ msg: "sqs poll failed", error: describeError(error) });
-        if (this.running) await Bun.sleep(1_000);
+        // SQS fora: espera cada vez mais e loga só de vez em quando
+        const delayMs = backoff.failed();
+        if (backoff.shouldLog()) {
+          this.logger.error({
+            msg: "sqs poll failed",
+            error: describeError(error),
+            consecutiveFailures: backoff.consecutiveFailures,
+            retryInMs: delayMs,
+          });
+        }
+        if (this.running) await this.sleep(delayMs);
       }
     }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      this.wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
   }
 
   private async ack(message: Message): Promise<void> {

@@ -1,0 +1,169 @@
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { ReceiveMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
+import { ConnectionException } from "@mikro-orm/core";
+import type { MikroORM } from "@mikro-orm/postgresql";
+import { ConsoleLogger, Logger } from "@nestjs/common";
+import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
+import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
+import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
+import { OutboxRepository } from "../../src/infrastructure/database/outbox.repository";
+import { WagerTransactionRepository } from "../../src/infrastructure/database/wager-transaction.repository";
+import { SqsWagerConsumer } from "../../src/infrastructure/messaging/sqs-wager-consumer";
+import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
+import { createTestOrm } from "./support/database";
+import { createTestQueue } from "./support/sqs";
+
+/**
+ * Laços em segundo plano com a dependência fora do ar: a espera entre
+ * rodadas que falham cresce (aqui 20, 40, 80, 160ms...), em vez de martelar
+ * o banco e o log no ritmo normal.
+ */
+let orm: MikroORM;
+let lines: Array<Record<string, any>>;
+const fast = { baseMs: 20, maxMs: 160 };
+const WINDOW_MS = 700;
+
+beforeAll(async () => {
+  orm = await createTestOrm();
+});
+
+afterAll(async () => {
+  await orm.close();
+});
+
+afterEach(() => {
+  Logger.overrideLogger(new ConsoleLogger());
+});
+
+function captureLogs() {
+  lines = [];
+  Logger.overrideLogger(new JsonLogger((line) => lines.push(JSON.parse(line))));
+}
+
+const down = () => new ConnectionException(new Error("db down"));
+
+describe("relay da outbox", () => {
+  test("banco fora: tentativas espaçadas cada vez mais, não um laço quente", async () => {
+    captureLogs();
+    let claims = 0;
+    class DownOutbox extends OutboxRepository {
+      override async claimDue(): Promise<never> {
+        claims++;
+        throw down();
+      }
+    }
+    const relay = new OutboxRelay(orm, { publish: async () => {} }, { batchSize: 50, idleDelayMs: 0, failureBackoff: fast }, new DownOutbox());
+    relay.start();
+    await Bun.sleep(WINDOW_MS);
+    await relay.stop();
+
+    expect(claims).toBeGreaterThanOrEqual(3);
+    expect(claims).toBeLessThanOrEqual(10);
+    expect(lines.filter((l) => l.msg === "outbox relay round failed").length).toBeLessThanOrEqual(claims);
+  });
+
+  test("quando volta, registra uma linha com quantas rodadas falharam", async () => {
+    captureLogs();
+    let claims = 0;
+    class FlakyOutbox extends OutboxRepository {
+      override async claimDue(...args: Parameters<OutboxRepository["claimDue"]>) {
+        if (++claims <= 3) throw down();
+        return super.claimDue(...args);
+      }
+    }
+    const relay = new OutboxRelay(orm, { publish: async () => {} }, { batchSize: 50, idleDelayMs: 10, failureBackoff: fast }, new FlakyOutbox());
+    relay.start();
+    await Bun.sleep(WINDOW_MS);
+    await relay.stop();
+
+    expect(lines.filter((l) => l.msg === "outbox relay recovered")).toEqual([
+      expect.objectContaining({ level: "info", failedRounds: 3 }),
+    ]);
+  });
+});
+
+describe("worker de pendentes", () => {
+  test("banco fora: tentativas espaçadas cada vez mais", async () => {
+    captureLogs();
+    let leases = 0;
+    class DownTransactions extends WagerTransactionRepository {
+      override async leaseDuePendingReferences(): Promise<never> {
+        leases++;
+        throw down();
+      }
+    }
+    const worker = new PendingReferenceWorker(
+      orm,
+      new ProcessWagerTransactionUseCase(orm),
+      { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5, failureBackoff: fast },
+      undefined,
+      new DownTransactions(),
+    );
+    worker.start();
+    await Bun.sleep(WINDOW_MS);
+    await worker.stop();
+
+    expect(leases).toBeGreaterThanOrEqual(3);
+    expect(leases).toBeLessThanOrEqual(10);
+  });
+});
+
+describe("consumidor SQS", () => {
+  test("SQS fora: tentativas de leitura espaçadas cada vez mais", async () => {
+    captureLogs();
+    const dlq = await createTestQueue("backoff-dlq");
+    const main = await createTestQueue("backoff-main");
+    let receives = 0;
+    const downClient = {
+      send: (cmd: unknown, opts?: unknown) => {
+        if (cmd instanceof ReceiveMessageCommand) {
+          receives++;
+          return Promise.reject(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
+        }
+        return main.client.send(cmd as never, opts as never);
+      },
+    } as unknown as SQSClient;
+    const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm), {
+      queueUrl: main.queueUrl,
+      dlqUrl: dlq.queueUrl,
+      consumerName: "backoff",
+      waitTimeSeconds: 1,
+      maxAttempts: 5,
+      backoffBaseSeconds: 0,
+      backoffMaxSeconds: 0,
+      pollFailureBackoff: fast,
+    });
+    consumer.start();
+    await Bun.sleep(WINDOW_MS);
+    await consumer.stop();
+
+    expect(receives).toBeGreaterThanOrEqual(3);
+    expect(receives).toBeLessThanOrEqual(10);
+    await main.delete();
+    await dlq.delete();
+  });
+});
+
+test("SIGTERM durante uma espera longa: o consumidor para na hora, não depois dos 10s", async () => {
+  const dlq = await createTestQueue("stop-dlq");
+  const main = await createTestQueue("stop-main");
+  const downClient = {
+    send: (cmd: unknown, opts?: unknown) =>
+      cmd instanceof ReceiveMessageCommand
+        ? Promise.reject(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))
+        : main.client.send(cmd as never, opts as never),
+  } as unknown as SQSClient;
+  const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm), {
+    queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "stop", waitTimeSeconds: 1,
+    maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0,
+    pollFailureBackoff: { baseMs: 10_000, maxMs: 10_000 },
+  });
+  consumer.start();
+  await Bun.sleep(100); // primeira leitura falhou: está esperando 10s
+
+  const started = performance.now();
+  await consumer.stop();
+  expect(performance.now() - started).toBeLessThan(1_000);
+  await main.delete();
+  await dlq.delete();
+}, 20_000);

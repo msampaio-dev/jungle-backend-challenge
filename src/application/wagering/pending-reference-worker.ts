@@ -12,6 +12,7 @@ import { OutboxRepository } from "../../infrastructure/database/outbox.repositor
 import { describeError } from "../../infrastructure/observability/json-logger";
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
+import { DEFAULT_FAILURE_BACKOFF, FailureBackoff, type FailureBackoffOptions } from "../shared/failure-backoff";
 import type { ProcessWagerTransactionUseCase } from "./process-wager-transaction.use-case";
 
 export interface PendingReferenceWorkerOptions {
@@ -22,6 +23,8 @@ export interface PendingReferenceWorkerOptions {
   leaseMs: number;
   /** falhas não transitórias seguidas antes de desistir com FAILED */
   maxResolutionFailures: number;
+  /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 30s) */
+  failureBackoff?: FailureBackoffOptions;
 }
 
 export const DEFAULT_PENDING_REFERENCE_WORKER_OPTIONS: PendingReferenceWorkerOptions = {
@@ -207,14 +210,26 @@ export class PendingReferenceWorker {
   }
 
   private async run(): Promise<void> {
+    const backoff = new FailureBackoff(this.options.failureBackoff ?? DEFAULT_FAILURE_BACKOFF);
     while (this.running) {
-      let full = false;
+      let delayMs = this.options.idleDelayMs;
       try {
-        full = (await this.runOnce()).length === this.options.batchSize;
+        const outcomes = await this.runOnce();
+        const failedRounds = backoff.succeeded();
+        if (failedRounds > 0) this.logger.log({ msg: "pending reference worker recovered", failedRounds });
+        if (outcomes.length === this.options.batchSize) delayMs = 0; // lote cheio: tem mais
       } catch (error) {
-        this.logger.error({ msg: "pending reference round failed", error: describeError(error) });
+        delayMs = backoff.failed();
+        if (backoff.shouldLog()) {
+          this.logger.error({
+            msg: "pending reference round failed",
+            error: describeError(error),
+            consecutiveFailures: backoff.consecutiveFailures,
+            retryInMs: delayMs,
+          });
+        }
       }
-      if (!full && this.running) await this.sleep(this.options.idleDelayMs);
+      if (delayMs > 0 && this.running) await this.sleep(delayMs);
     }
   }
 
