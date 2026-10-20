@@ -84,6 +84,13 @@ describe("X-Correlation-Id", () => {
   });
 });
 
+describe("X-Instance", () => {
+  test("toda resposta diz qual instância atendeu (máquina e processo)", async () => {
+    const res = await api.call("GET", "/health/live");
+    expect(res.headers.get("x-instance")).toBe(`${require("node:os").hostname()}:${process.pid}`);
+  });
+});
+
 describe("logs da requisição", () => {
   test("a linha da aposta processada traz todos os ids pedidos e nenhum valor", async () => {
     const w = await newWallet();

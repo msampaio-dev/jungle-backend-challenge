@@ -1,10 +1,13 @@
 import { Injectable, Logger, type NestMiddleware } from "@nestjs/common";
 import type { NextFunction, Request, Response } from "express";
+import { hostname } from "node:os";
 import { runWithContext } from "../../infrastructure/observability/context";
 
 /** Só o que é seguro de repetir em logs e headers; o resto é trocado por um id novo. */
 const VALID_CORRELATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 export const CORRELATION_HEADER = "X-Correlation-Id";
+/** máquina (no Docker, o id do container) e processo */
+const INSTANCE_ID = `${hostname()}:${process.pid}`;
 
 /**
  * Abre o contexto de log da requisição. Usa o X-Correlation-Id do provedor
@@ -20,6 +23,8 @@ export class CorrelationMiddleware implements NestMiddleware {
     const received = request.header(CORRELATION_HEADER);
     const correlationId = received && VALID_CORRELATION_ID.test(received) ? received : Bun.randomUUIDv7();
     response.setHeader(CORRELATION_HEADER, correlationId);
+    // com várias réplicas atrás do gateway, diz qual delas atendeu
+    response.setHeader("X-Instance", INSTANCE_ID);
 
     const startedAt = performance.now();
     response.on("finish", () => {

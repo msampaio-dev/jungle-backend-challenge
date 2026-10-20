@@ -34,5 +34,57 @@ services:
       timeout: 5s
       retries: 40
 
+  # Migrations rodam UMA vez, antes das instâncias. Se cada réplica as
+  # rodasse ao subir, as três tentariam criar as mesmas tabelas ao mesmo tempo.
+  migrate:
+    build: .
+    image: jungle-wagering:local
+    command: ["bun", "run", "src/infrastructure/database/migrate.ts", "up"]
+    environment:
+      DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Escala com: docker compose up --build --scale app=3
+  app:
+    image: jungle-wagering:local
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      SQS_EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wagering-events.fifo
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      localstack:
+        condition: service_healthy
+    healthcheck:
+      # readiness: Postgres e filas alcançáveis
+      test: ["CMD", "bun", "-e", "const r = await fetch('http://127.0.0.1:3000/health/ready'); process.exit(r.ok ? 0 : 1)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    # SIGTERM: o consumidor termina a mensagem em andamento e a leitura atual
+    # (até 10s de long polling) antes de sair
+    stop_grace_period: 30s
+
+  # Entrada única em localhost:3000, distribuindo entre as réplicas da app.
+  gateway:
+    image: nginx:1.27.5-alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
 volumes:
   postgres-data:
