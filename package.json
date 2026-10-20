@@ -10,9 +10,10 @@
     "migrate:up": "bun run src/infrastructure/database/migrate.ts up",
     "migrate:down": "bun run src/infrastructure/database/migrate.ts down",
     "test": "bun test test/unit",
-    "test:integration": "bun test --timeout 30000 test/integration"
+    "test:integration": "bun test --timeout 60000 test/integration"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "3.1145.0",
     "@mikro-orm/core": "6.6.17",
     "@mikro-orm/migrations": "6.6.17",
     "@mikro-orm/postgresql": "6.6.17",
