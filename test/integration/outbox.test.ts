@@ -204,7 +204,9 @@ describe("crash", () => {
     const poolMax = process.env.DATABASE_POOL_MAX;
     process.env.DATABASE_POOL_MAX = "1";
     const dyingOrm = await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL));
-    process.env.DATABASE_POOL_MAX = poolMax;
+    // atribuir undefined a process.env grava o texto "undefined": se não existia, apaga
+    if (poolMax === undefined) delete process.env.DATABASE_POOL_MAX;
+    else process.env.DATABASE_POOL_MAX = poolMax;
     const [{ pid }] = (await dyingOrm.em.getConnection().execute("select pg_backend_pid() as pid")) as [{ pid: number }];
     const dying = new OutboxRelay(dyingOrm, stuck).publishBatch();
     const outcome = dying.then(
