@@ -114,6 +114,7 @@ describe("consumidor SQS", () => {
   test.each([
     ["JSON inválido", () => "{ não é json", "INVALID_ENVELOPE"],
     ["tipo desconhecido", () => ({ messageId: "m", type: "Other", data: {} }), "INVALID_ENVELOPE"],
+    ["messageId gigante", (w: TestWallet) => envelope(w, {}, "m".repeat(256)), "INVALID_ENVELOPE"],
     ["dinheiro inválido", (w: TestWallet) => envelope(w, { money: { amount: "1e3", currency: "BRL" } }), "INVALID_MONEY"],
     ["wallet inexistente", (w: TestWallet) => envelope({ ...w, walletId: Bun.randomUUIDv7() }), "WALLET_NOT_FOUND"],
   ])("erro permanente (%s) vai direto para a DLQ com o motivo", async (_name, build, code) => {

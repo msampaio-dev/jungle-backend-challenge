@@ -129,6 +129,15 @@ describe("POST /wagering/transactions — status", () => {
     expect(res.body.code).toBeString();
   });
 
+  test("identificadores longos são 400, não 500", async () => {
+    const w = await newWallet();
+    const rnd = (n: number) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(16).padStart(2, "0")).join("");
+    const bet = wager(w, { externalTransactionId: rnd(3000) });
+    expect((await bet.send()).status).toBe(400);
+    const res = await api.call("POST", "/wagering/transactions", wager(w).body, { "Idempotency-Key": rnd(3000) });
+    expect(res.status).toBe(400);
+  });
+
   test("404 com wallet inexistente", async () => {
     const res = await wager({ walletId: Bun.randomUUIDv7(), playerId: Bun.randomUUIDv7() }).send();
     expect(res.status).toBe(404);

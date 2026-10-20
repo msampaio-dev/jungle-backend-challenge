@@ -134,6 +134,15 @@ describe("wallet_ledger_entries", () => {
 });
 
 describe("wager_transactions", () => {
+  test.each(["provider_id", "external_transaction_id", "idempotency_key", "round_id", "game_id", "reference_external_transaction_id"])(
+    "%s acima de 255 caracteres é recusado pelo CHECK",
+    async (column) => {
+      const fields: Record<string, string> = { [column]: "x".repeat(256) };
+      if (column === "reference_external_transaction_id") fields.kind = "WIN";
+      await expect(insertTransaction(crypto.randomUUID(), fields)).rejects.toThrow(/wager_tx_identifier_length_ck/);
+    },
+  );
+
   test("mesma chave de idempotência no mesmo provedor é recusada", async () => {
     const first = crypto.randomUUID();
     await insertTransaction(first, { idempotency_key: "provider-a:dup" });

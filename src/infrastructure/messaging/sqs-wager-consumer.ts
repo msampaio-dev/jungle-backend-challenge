@@ -17,6 +17,7 @@ import type {
 } from "../../application/wagering/process-wager-transaction.use-case";
 import { payloadHash } from "../../application/wagering/payload-hash";
 import { InboxMessage } from "../../domain/messaging/inbox-message";
+import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { InboxRepository } from "../database/inbox.repository";
 
 export interface SqsConsumerOptions {
@@ -283,6 +284,9 @@ function parseEnvelope(body: string | undefined): Envelope {
   if (typeof e !== "object" || e === null) throw new InvalidEnvelopeError("body must be a JSON object");
   if (e.type !== "WagerTransactionRequested") throw new InvalidEnvelopeError(`unexpected type: ${String(e.type)}`);
   if (typeof e.messageId !== "string" || e.messageId.trim() === "") throw new InvalidEnvelopeError("messageId is required");
+  if (e.messageId.length > MAX_IDENTIFIER_LENGTH) {
+    throw new InvalidEnvelopeError(`messageId must have at most ${MAX_IDENTIFIER_LENGTH} characters`);
+  }
   if (typeof e.data !== "object" || e.data === null) throw new InvalidEnvelopeError("data is required");
   const data = e.data as Record<string, unknown>;
   if (typeof data.idempotencyKey !== "string" || data.idempotencyKey.trim() === "") {

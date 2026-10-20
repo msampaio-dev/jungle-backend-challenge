@@ -73,6 +73,16 @@ describe("WagerTransaction.create", () => {
     expect(() => tx({ roundId: " " })).toThrow(/roundId is required/);
     expect(() => tx({ providerId: "" })).toThrow(/providerId is required/);
   });
+
+  test.each(["providerId", "externalTransactionId", "idempotencyKey", "roundId", "gameId", "referenceExternalTransactionId"])(
+    "%s com mais de 255 caracteres é recusado",
+    (field) => {
+      // só REFUND aceita (e exige) referência; os outros campos são testados numa BET simples
+      const base = field === "referenceExternalTransactionId" ? { kind: Kind.Refund } : { kind: Kind.Bet };
+      expect(() => tx({ ...base, [field]: "x".repeat(256) })).toThrow(/at most 255/);
+      expect(() => tx({ ...base, [field]: "x".repeat(255) })).not.toThrow();
+    },
+  );
 });
 
 describe("transições", () => {

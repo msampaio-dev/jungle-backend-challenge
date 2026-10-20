@@ -70,6 +70,9 @@ export interface OpeningTransactionProps {
 
 export const OPENING_PROVIDER_ID = "internal";
 
+/** Tamanho máximo dos identificadores vindos do provedor (também é CHECK no banco). */
+export const MAX_IDENTIFIER_LENGTH = 255;
+
 /**
  * Transições válidas:
  *   PENDING           -> PROCESSED | REJECTED | FAILED | PENDING_REFERENCE
@@ -112,6 +115,19 @@ export class WagerTransaction {
     for (const field of ["providerId", "externalTransactionId", "idempotencyKey", "roundId", "gameId"] as const) {
       if (typeof props[field] !== "string" || props[field].trim() === "") {
         throw new InvalidWagerTransactionError(`${field} is required`);
+      }
+    }
+    for (const field of [
+      "providerId",
+      "externalTransactionId",
+      "idempotencyKey",
+      "roundId",
+      "gameId",
+      "referenceExternalTransactionId",
+    ] as const) {
+      const value = props[field];
+      if (typeof value === "string" && value.length > MAX_IDENTIFIER_LENGTH) {
+        throw new InvalidWagerTransactionError(`${field} must have at most ${MAX_IDENTIFIER_LENGTH} characters`);
       }
     }
     if ((kind === WagerTransactionKind.Refund || kind === WagerTransactionKind.Rollback) && !reference) {
