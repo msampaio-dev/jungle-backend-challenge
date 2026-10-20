@@ -11,7 +11,7 @@ export interface OutboxRelayOptions {
   batchSize: number;
   /** espera entre rodadas quando não há nada para publicar */
   idleDelayMs: number;
-  /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 30s) */
+  /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 10s) */
   failureBackoff?: FailureBackoffOptions;
 }
 

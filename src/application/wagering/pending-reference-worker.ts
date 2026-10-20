@@ -23,7 +23,7 @@ export interface PendingReferenceWorkerOptions {
   leaseMs: number;
   /** falhas não transitórias seguidas antes de desistir com FAILED */
   maxResolutionFailures: number;
-  /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 30s) */
+  /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 10s) */
   failureBackoff?: FailureBackoffOptions;
 }
 

@@ -3,16 +3,17 @@ export interface FailureBackoffOptions {
   maxMs: number;
 }
 
-export const DEFAULT_FAILURE_BACKOFF: FailureBackoffOptions = { baseMs: 1_000, maxMs: 30_000 };
+export const DEFAULT_FAILURE_BACKOFF: FailureBackoffOptions = { baseMs: 1_000, maxMs: 10_000 };
 
 /** No teto, uma linha de log a cada tantas falhas seguidas. */
 const LOG_EVERY_AT_MAX = 10;
 
 /**
  * Espera entre rodadas de um laço em segundo plano quando a dependência
- * (banco, SQS) está fora: dobra a cada falha seguida (1s, 2s, 4s... até 30s)
+ * (banco, SQS) está fora: dobra a cada falha seguida (1s, 2s, 4s, 8s, 10s)
  * e volta ao começo no primeiro sucesso. Sem isso, os laços martelavam a
- * dependência e o log no ritmo normal durante toda a queda.
+ * dependência e o log no ritmo normal durante toda a queda. Teto de 10s:
+ * depois de uma queda longa, o laço percebe a volta em no máximo 10s.
  */
 export class FailureBackoff {
   private failures = 0;
