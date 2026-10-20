@@ -7,6 +7,7 @@ import {
   type SubmitWagerCommand,
 } from "../../src/application/wagering/process-wager-transaction.use-case";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { command, createWallet } from "./support/fixtures";
 
 /**
@@ -22,7 +23,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await orm.close();
+  }
 });
 
 // gerador determinístico: a mesma semente reproduz a mesma carga

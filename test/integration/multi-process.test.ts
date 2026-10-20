@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { WalletQueries } from "../../src/application/queries/wallet-queries";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { type AppProcess, callWithRetry, startAppProcess } from "./support/processes";
 import { createTestQueue } from "./support/sqs";
 
@@ -32,9 +33,14 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  await Promise.all(apps.map((a) => a.kill()));
-  await Promise.all([main.delete(), dlq.delete(), events.delete()]);
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await Promise.all(apps.map((a) => a.kill()));
+    await Promise.all([main.delete(), dlq.delete(), events.delete()]);
+    await orm.close();
+  }
 });
 
 const urls = () => apps.map((a) => a.url);

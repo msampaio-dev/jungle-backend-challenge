@@ -11,6 +11,7 @@ import { WagerTransactionRepository } from "../../src/infrastructure/database/wa
 import { SqsWagerConsumer } from "../../src/infrastructure/messaging/sqs-wager-consumer";
 import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { createTestQueue } from "./support/sqs";
 
 /**
@@ -28,7 +29,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await orm.close();
+  }
 });
 
 afterEach(() => {

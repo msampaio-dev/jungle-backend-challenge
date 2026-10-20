@@ -8,6 +8,7 @@ import { ConsoleLogger, Logger } from "@nestjs/common";
 import { InboxRepository } from "../../src/infrastructure/database/inbox.repository";
 import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { command, createWallet, snapshot, type TestWallet } from "./support/fixtures";
 import { createTestQueue } from "./support/sqs";
 
@@ -36,7 +37,12 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await orm.close();
+  }
 });
 
 const useCase = () => new ProcessWagerTransactionUseCase(orm);
@@ -100,6 +106,39 @@ describe("consumidor SQS", () => {
     } finally {
       Logger.overrideLogger(new ConsoleLogger());
     }
+  });
+
+  test("atomicidade: falha depois de gravar a inbox desfaz tudo junto (transação, ledger, outbox e inbox)", async () => {
+    const w = await createWallet(orm, "100.00");
+    const msg = envelope(w, { amount: "25.00" });
+    await main.send(msg, w.walletId);
+
+    // a inbox é a ÚLTIMA coisa gravada na transação: grava e, na primeira vez, falha logo depois
+    let inserts = 0;
+    class InsertThenFailInbox extends InboxRepository {
+      override async insert(...args: Parameters<InboxRepository["insert"]>) {
+        await super.insert(...args);
+        if (++inserts === 1) throw new Error("crash right after the inbox insert");
+      }
+    }
+    const fragile = new SqsWagerConsumer(main.client, orm, useCase(), options, new InsertThenFailInbox());
+
+    expect(await fragile.pollOnce()).toEqual(["retry"]);
+    const ext = msg.data.externalTransactionId;
+    const [left] = await orm.em.getConnection().execute(
+      `select
+         (select count(*)::int from inbox_messages where message_id = ?) as inbox,
+         (select count(*)::int from wager_transactions where external_transaction_id = ?) as tx,
+         (select count(*)::int from outbox_messages where payload->'data'->>'externalTransactionId' = ?) as outbox`,
+      [msg.messageId, ext, ext],
+    );
+    expect(left).toEqual({ inbox: 0, tx: 0, outbox: 0 });
+    expect((await snapshot(orm, w.walletId)).debits).toBe(0);
+
+    // se a inbox tivesse ficado, a reentrega seria descartada como duplicata e a aposta se perderia
+    expect(await consumeAll(fragile)).toEqual(["processed"]);
+    expect(await inboxCount(msg.messageId)).toBe(1);
+    expect((await snapshot(orm, w.walletId)).debits).toBe(1);
   });
 
   test("a mesma mensagem entregue duas vezes produz um único débito", async () => {

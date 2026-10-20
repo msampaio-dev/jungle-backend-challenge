@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { startTestApi, type TestApi } from "./support/http";
+import { expectLedgerInvariant } from "./support/invariant";
 
 let api: TestApi;
 const lines: Array<Record<string, any>> = [];
@@ -10,7 +11,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await api.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(api.orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await api.close();
+  }
 });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

@@ -5,6 +5,7 @@ import { databaseProbe, ReadinessChecker, sqsProbe } from "../../src/health/read
 import { createOrmConfig } from "../../src/infrastructure/database/mikro-orm.config";
 import { createSqsClient } from "../../src/infrastructure/messaging/sqs";
 import { startTestApi, type TestApi } from "./support/http";
+import { expectLedgerInvariant } from "./support/invariant";
 import { createTestQueue } from "./support/sqs";
 
 /** Aceita a conexão e nunca responde: dependência travada, o pior caso. */
@@ -19,9 +20,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await queue.delete();
-  await api.close();
-  blackhole.stop(true);
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(api.orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await queue.delete();
+    await api.close();
+    blackhole.stop(true);
+  }
 });
 
 const TIMEOUT_MS = 1_000;

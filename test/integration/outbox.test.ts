@@ -8,6 +8,7 @@ import { createOrmConfig } from "../../src/infrastructure/database/mikro-orm.con
 import { OutboxRepository } from "../../src/infrastructure/database/outbox.repository";
 import { SqsEventPublisher } from "../../src/infrastructure/messaging/sqs";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { command, createWallet, processor, snapshot } from "./support/fixtures";
 import { createTestQueue } from "./support/sqs";
 
@@ -22,8 +23,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await queue.delete();
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await queue.delete();
+    await orm.close();
+  }
 });
 
 const sql = (query: string, params: unknown[] = []) => orm.em.getConnection().execute(query, params);

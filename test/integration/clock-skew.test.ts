@@ -6,6 +6,7 @@ import { PendingReferenceWorker } from "../../src/application/wagering/pending-r
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import { SqsWagerConsumer } from "../../src/infrastructure/messaging/sqs-wager-consumer";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { command, createWallet } from "./support/fixtures";
 import { createTestQueue } from "./support/sqs";
 
@@ -26,7 +27,12 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await orm.close();
+  }
 });
 
 const sql = (q: string, p: unknown[] = []) => orm.em.getConnection().execute(q, p);

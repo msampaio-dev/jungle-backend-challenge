@@ -8,6 +8,7 @@ import { ConnectionException } from "@mikro-orm/core";
 import { ConsoleLogger, Logger } from "@nestjs/common";
 import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { createTestOrm } from "./support/database";
+import { expectLedgerInvariant } from "./support/invariant";
 import { command, createWallet, snapshot, type TestWallet } from "./support/fixtures";
 
 let orm: MikroORM;
@@ -17,7 +18,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await orm.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await orm.close();
+  }
 });
 
 const sql = (query: string, params: unknown[] = []) => orm.em.getConnection().execute(query, params);

@@ -9,6 +9,7 @@ import { WalletRepository } from "../../src/infrastructure/database/wallet.repos
 import { SqsWagerConsumer } from "../../src/infrastructure/messaging/sqs-wager-consumer";
 import { registry } from "../../src/infrastructure/observability/metrics";
 import { command, createWallet } from "./support/fixtures";
+import { expectLedgerInvariant, intentionallyCorrupted } from "./support/invariant";
 import { startTestApi, type TestApi } from "./support/http";
 import { createTestQueue } from "./support/sqs";
 
@@ -23,7 +24,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await api.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(api.orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await api.close();
+  }
 });
 
 /** Valor atual de uma série; histogramas usam o sufixo _count/_sum na série. */
@@ -264,6 +270,7 @@ describe("SQS", () => {
 describe("reconciliação", () => {
   test("divergência conta na métrica", async () => {
     const w = await createWallet(api.orm, "100.00");
+    intentionallyCorrupted.add(w.walletId);
     await api.orm.em.getConnection().execute("update wallets set balance = balance + 1 where id = ?", [w.walletId]);
     expect(
       await delta("wallet_reconciliation_divergences_total", {}, () => api.call("POST", `/wallets/${w.walletId}/reconciliation`)),

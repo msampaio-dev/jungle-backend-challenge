@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { startTestApi, type TestApi } from "./support/http";
+import { expectLedgerInvariant, intentionallyCorrupted } from "./support/invariant";
 
 let api: TestApi;
 
@@ -8,7 +9,12 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await api.close();
+  // a limpeza roda mesmo se a invariante falhar (senão processos e conexões ficariam vivos)
+  try {
+    await expectLedgerInvariant(api.orm); // invariante final da seção 13, em toda wallet
+  } finally {
+    await api.close();
+  }
 });
 
 async function newWallet(amount = "100.00") {
@@ -254,6 +260,7 @@ describe("consultas", () => {
 
   test("reconciliação pega lançamento que não começa onde o anterior terminou", async () => {
     const w = await newWallet(); // OPENING: 0.00 -> 100.00
+    intentionallyCorrupted.add(w.walletId);
     const sql = (q: string, p: unknown[]) => api.orm.em.getConnection().execute(q, p);
     const txId = crypto.randomUUID();
     await sql(
@@ -276,6 +283,7 @@ describe("consultas", () => {
 
   test("reconciliação aponta divergência sem corrigir", async () => {
     const w = await newWallet();
+    intentionallyCorrupted.add(w.walletId);
     // simula corrupção: mexe no saldo por fora (o ledger é imutável, a wallet não)
     await api.orm.em.getConnection().execute("update wallets set balance = balance + 5 where id = ?", [w.walletId]);
 
