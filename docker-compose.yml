@@ -39,6 +39,7 @@ services:
   migrate:
     build: .
     image: jungle-wagering:local
+    pull_policy: build # imagem local: constrói, nunca tenta baixar de um registro
     command: ["bun", "run", "src/infrastructure/database/migrate.ts", "up"]
     environment:
       DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
@@ -49,7 +50,11 @@ services:
 
   # Escala com: docker compose up --build --scale app=3
   app:
+    # build próprio: sem ele, numa máquina limpa o Compose tentaria baixar a
+    # imagem de um registro ("pull access denied") antes de construí-la
+    build: .
     image: jungle-wagering:local
+    pull_policy: build # imagem local: constrói, nunca tenta baixar de um registro
     environment:
       PORT: "3000"
       DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
