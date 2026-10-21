@@ -4,6 +4,7 @@ import { InvalidTransactionStateError, InvalidWagerTransactionError } from "../.
 import { FailureCode } from "../../src/domain/wagering/failure-code";
 import {
   type CreateWagerTransactionProps,
+  OPENING_PROVIDER_ID,
   WagerTransaction,
   WagerTransactionKind as Kind,
   WagerTransactionStatus as Status,
@@ -48,6 +49,10 @@ describe("WagerTransaction.create", () => {
 
   test("OPENING não pode ser submetido de fora", () => {
     expect(() => tx({ kind: Kind.Opening })).toThrow(InvalidWagerTransactionError);
+  });
+
+  test("providerId reservado das transações internas não pode vir de fora", () => {
+    expect(() => tx({ providerId: OPENING_PROVIDER_ID })).toThrow(/providerId internal is reserved/);
   });
 
   test.each([Kind.Refund, Kind.Rollback])("%s exige referência", (kind) => {

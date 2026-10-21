@@ -149,6 +149,11 @@ export class WagerTransaction {
     if (kind === WagerTransactionKind.Opening) {
       throw new InvalidWagerTransactionError("OPENING is internal and cannot be submitted");
     }
+    // namespace das transações internas: um provedor com esse id dividiria
+    // as chaves únicas (idempotência, id externo) com as OPENING
+    if (props.providerId === OPENING_PROVIDER_ID) {
+      throw new InvalidWagerTransactionError(`providerId ${OPENING_PROVIDER_ID} is reserved`);
+    }
     if (!Object.values(WagerTransactionKind).includes(kind)) {
       throw new InvalidWagerTransactionError(`unknown kind: ${String(kind)}`);
     }
