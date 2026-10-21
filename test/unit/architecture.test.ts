@@ -36,4 +36,15 @@ describe("regra de dependência", () => {
     // MikroORM fica permitido de propósito: a transação é o EntityManager (ver ARCHITECTURE.md)
     expect(violations(imports, /\/(infrastructure|interfaces|health)\/|^@aws-sdk|^prom-client/)).toEqual([]);
   });
+
+  test("na aplicação, só o lado de leitura (application/queries) executa SQL; a escrita passa pelos repositórios", async () => {
+    const offenders: string[] = [];
+    for await (const file of new Glob("src/application/**/*.ts").scan(".")) {
+      const path = file.replaceAll("\\", "/");
+      if (path.startsWith("src/application/queries/")) continue;
+      const source = await Bun.file(file).text();
+      if (/getConnection\(\)|\bem\.execute\(/.test(source)) offenders.push(path);
+    }
+    expect(offenders).toEqual([]);
+  });
 });

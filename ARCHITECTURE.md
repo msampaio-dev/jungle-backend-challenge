@@ -27,7 +27,7 @@ As setas são imports, e o teste `test/unit/architecture.test.ts` confere essa r
 
 O domínio (`src/domain`) é TypeScript puro: não importa NestJS nem MikroORM. As classes têm construtor privado e factories estáticas (`create`, `from`, `open`, `rehydrate`). `rehydrate` reconstrói o que veio do banco sem revalidar transições, como pede a seção 6.0.
 
-A camada de aplicação tem os use cases (`ProcessWagerTransactionUseCase`, `CreateWalletUseCase`), os workers, a classificação única de erros (`error-kind.ts`), que a API e o consumidor usam para decidir o que fazer com cada erro, e o contexto da operação (os ids que acompanham os logs). Ela fala com o mundo de fora só por portas, em `src/application/ports`:
+A camada de aplicação tem os use cases (`ProcessWagerTransactionUseCase`, `CreateWalletUseCase`), os workers, a classificação única de erros (`error-kind.ts`), que a API e o consumidor usam para decidir o que fazer com cada erro, e o contexto da operação (os ids que acompanham os logs). Ela fala com o mundo de fora por portas, em `src/application/ports`, com as duas exceções descritas mais abaixo:
 
 | Porta | Para quê | Implementação |
 |---|---|---|
@@ -40,6 +40,11 @@ A camada de aplicação tem os use cases (`ProcessWagerTransactionUseCase`, `Cre
 A infraestrutura implementa as portas e monta tudo em `infrastructure/wiring.ts`, a raiz de composição. Os testes trocam uma peça só, como uma outbox que falha de propósito, com `wageringPorts({ outbox: ... })`. O consumidor SQS chama o mesmo use case que a API, com a gravação da inbox passada como um gancho que roda dentro da transação dele.
 
 O MikroORM continua visível na aplicação, de propósito. As portas de persistência recebem o `EntityManager`, porque ele é a transação: tudo que uma operação grava precisa passar pelo mesmo `em.fork().transactional()`. Tirar isso da aplicação exigiria uma porta de Unit of Work só para esconder o ORM que o próprio desafio indica, e a troca de ORM não é um cenário deste serviço.
+
+Duas exceções às portas, conscientes:
+
+- O lado de leitura (`application/queries/wallet-queries.ts`) consulta o banco em SQL direto. As consultas não mudam estado nem têm regra de negócio a proteger, e a reconciliação usa uma função de janela (`lag()`) para conferir o encadeamento do ledger, que ficaria escondida atrás de um repositório. O teste de arquitetura permite SQL só nessa pasta: toda escrita passa pelos repositórios.
+- Os use cases reconhecem pelo nome da constraint quando um `INSERT` perdeu uma corrida (`wager_tx_idempotency_uq`, `wager_tx_external_id_uq`, `wallets_player_currency_uq`), para transformar isso em replay ou em 409. Isso acopla a regra aos nomes do schema. O próximo passo seria o repositório traduzir a violação num erro da aplicação.
 
 ## ORM e estratégia transacional
 

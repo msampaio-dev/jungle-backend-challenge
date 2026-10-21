@@ -16,6 +16,8 @@ import type { WalletLedgerEntry } from "../../domain/wallet/wallet-ledger-entry"
 
 export interface WalletRepositoryPort {
   findById(em: EntityManager, id: string): Promise<Wallet | null>;
+  /** Id da wallet do jogador nessa moeda (há no máximo uma). */
+  findIdByPlayer(em: EntityManager, playerId: string, currency: string): Promise<string | null>;
   /** Trava a linha da wallet até o fim da transação (SELECT ... FOR UPDATE). */
   lockById(em: EntityManager, id: string): Promise<Wallet | null>;
   insert(em: EntityManager, wallet: Wallet): Promise<void>;

@@ -35,6 +35,11 @@ export class WalletRepository implements WalletRepositoryPort {
     return record ? toWallet(record) : null;
   }
 
+  async findIdByPlayer(em: EntityManager, playerId: string, currency: string): Promise<string | null> {
+    const record = await em.findOne(WalletRecord, { playerId, currency }, { fields: ["id"] });
+    return record?.id ?? null;
+  }
+
   /**
    * SELECT ... FOR UPDATE na linha da carteira. Precisa rodar dentro de
    * uma transação: o lock vale até o commit/rollback e só trava esta

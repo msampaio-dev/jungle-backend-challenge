@@ -70,12 +70,10 @@ export class CreateWalletUseCase {
       });
     } catch (error) {
       if (error instanceof UniqueConstraintViolationException && error.message.includes("wallets_player_currency_uq")) {
-        const [existing] = await this.orm.em
-          .getConnection()
-          .execute("select id from wallets where player_id = ? and currency = ?", [playerId, initialBalance.currency]);
+        const existingId = await this.ports.wallets.findIdByPlayer(this.orm.em.fork(), playerId, initialBalance.currency);
         throw new WalletAlreadyExistsError(
           `player ${playerId} already has a ${initialBalance.currency} wallet`,
-          String(existing!.id),
+          existingId!,
         );
       }
       throw error;
