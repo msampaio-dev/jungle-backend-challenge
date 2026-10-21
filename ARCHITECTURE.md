@@ -297,6 +297,7 @@ Sobre filas e ordem:
 - A ordem dos eventos por wallet tem um custo: um evento em backoff segura os seguintes da mesma wallet até sair, como a própria FIFO faz dentro de um MessageGroup.
 - Uma mensagem de entrada em retry segura o MessageGroup dela por até cerca de 3 minutos. Se o provedor usar um grupo só para tudo, uma mensagem com problema atrasa todas.
 - O `maxReceiveCount` 10 também conta as entregas devolvidas em shutdown. Muitos restarts seguidos com a mesma mensagem em voo poderiam mandá-la para a DLQ pela política da fila, sem o motivo que a aplicação grava.
+- O relay ordena os eventos de uma wallet por `(occurred_at, id)`. O `occurred_at` passa por um `Date` do JavaScript, que guarda milissegundos, e o desempate pelo `id` (UUIDv7) só é garantido dentro de um mesmo processo. Duas transações da mesma wallet, em réplicas diferentes e no mesmo milissegundo, poderiam sair na ordem trocada. Na prática isso não se reproduziu: sob carga com três processos, o menor intervalo medido entre transações seguidas da mesma wallet foi de 9 ms, porque cada uma faz vários round-trips ao banco depois de ler a hora. A correção seria ordenar por uma sequência do banco atribuída no `INSERT`, já que o lock da wallet serializa as inserções.
 - O comportamento da FIFO (ordem por grupo, visibilidade, redrive) foi verificado no LocalStack, não na AWS.
 
 Sobre regras de negócio:
