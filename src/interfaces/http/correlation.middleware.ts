@@ -8,6 +8,8 @@ const VALID_CORRELATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 export const CORRELATION_HEADER = "X-Correlation-Id";
 /** máquina (no Docker, o id do container) e processo */
 const INSTANCE_ID = `${hostname()}:${process.pid}`;
+/** chamados por máquinas (healthcheck, Prometheus), não por provedores */
+const QUIET_PATHS = /^\/(health|metrics)(\/|$)/;
 
 /**
  * Abre o contexto de log da requisição. Usa o X-Correlation-Id do provedor
@@ -28,12 +30,17 @@ export class CorrelationMiddleware implements NestMiddleware {
 
     const startedAt = performance.now();
     response.on("finish", () => {
+      const path = request.originalUrl.split("?")[0]!;
+      // Health e métricas são chamados o tempo todo (o healthcheck do Docker a
+      // cada 3s por réplica): com sucesso, a linha seria só ruído enterrando o
+      // resto. Com erro, continua saindo, porque aí é sinal.
+      if (QUIET_PATHS.test(path) && response.statusCode < 400) return;
       // o "finish" roda fora do contexto da requisição: reabre com o mesmo id
       runWithContext({ correlationId }, () =>
         this.logger.log({
           msg: "http request",
           method: request.method,
-          path: request.originalUrl.split("?")[0],
+          path,
           status: response.statusCode,
           durationMs: Math.round((performance.now() - startedAt) * 10) / 10,
         }),

@@ -126,4 +126,26 @@ describe("logs da requisição", () => {
       status: 400,
     });
   });
+
+  test("health e métricas que respondem bem não geram linha de acesso (o healthcheck chama a cada 3s)", async () => {
+    for (const path of ["/health/ready", "/health/live", "/metrics"]) {
+      const res = await api.call("GET", path, undefined, { "X-Correlation-Id": `probe-${path.replaceAll("/", "-")}` });
+      expect(res.status).toBe(200);
+    }
+    // marco: quando a linha desta requisição aparece, as anteriores já teriam aparecido
+    await api.call("GET", "/wallets/nao-e-uuid", undefined, { "X-Correlation-Id": "fence-1" });
+    while (!lines.some((l) => l.correlationId === "fence-1")) await Bun.sleep(5);
+
+    const noisy = lines.filter((l) => l.msg === "http request" && /^\/(health|metrics)/.test(l.path));
+    expect(noisy).toEqual([]);
+  });
+
+  test("health que responde erro continua gerando linha de acesso: aí é sinal, não ruído", async () => {
+    const res = await api.call("GET", "/health/nao-existe", undefined, { "X-Correlation-Id": "health-404" });
+    expect(res.status).toBe(404);
+    expect(lines.find((l) => l.msg === "http request" && l.correlationId === "health-404")).toMatchObject({
+      path: "/health/nao-existe",
+      status: 404,
+    });
+  });
 });

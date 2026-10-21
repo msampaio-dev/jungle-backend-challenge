@@ -40,7 +40,9 @@ export async function startTestApi(
         body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
       });
       const text = await response.text();
-      return { status: response.status, body: text ? JSON.parse(text) : undefined, headers: response.headers };
+      // /metrics responde texto no formato do Prometheus, não JSON
+      const json = response.headers.get("content-type")?.includes("json");
+      return { status: response.status, body: text && json ? JSON.parse(text) : text || undefined, headers: response.headers };
     },
     async close() {
       await app.close();
