@@ -25,3 +25,15 @@ test("a política da fila real só age depois do limite da aplicação (rede de 
   const { maxReceiveCount } = JSON.parse(Attributes!.RedrivePolicy!) as { maxReceiveCount: string | number };
   expect(Number(maxReceiveCount)).toBeGreaterThan(DEFAULT_CONSUMER_OPTIONS.maxAttempts);
 });
+
+test("o LocalStack só fica saudável depois que todas as filas do script de init existem", async () => {
+  const script = await Bun.file("docker/localstack/init-sqs.sh").text();
+  const created = [...script.matchAll(/--queue-name\s+(\S+)/g)].map((m) => m[1]!);
+  const compose = Bun.YAML.parse(await Bun.file("docker-compose.yml").text()) as {
+    services: { localstack: { healthcheck: { test: string[] } } };
+  };
+  const healthcheck = compose.services.localstack.healthcheck.test.join(" ");
+
+  expect(created).toEqual(["wager-transactions-dlq.fifo", "wager-transactions.fifo", "wagering-events.fifo"]);
+  for (const queue of created) expect(healthcheck).toContain(`--queue-name ${queue}`);
+});

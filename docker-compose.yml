@@ -28,8 +28,14 @@ services:
     volumes:
       - ./docker/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
     healthcheck:
-      # só fica saudável depois que o script criou as filas
-      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wager-transactions.fifo"]
+      # só fica saudável depois que o script criou TODAS as filas (a de eventos
+      # é a última; checar só a principal deixava a app subir antes dela)
+      test:
+        - CMD-SHELL
+        - >-
+          awslocal sqs get-queue-url --queue-name wager-transactions-dlq.fifo &&
+          awslocal sqs get-queue-url --queue-name wager-transactions.fifo &&
+          awslocal sqs get-queue-url --queue-name wagering-events.fifo
       interval: 3s
       timeout: 5s
       retries: 40
