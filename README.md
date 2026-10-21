@@ -178,7 +178,9 @@ As URLs de fila só são exigidas quando o componente que as usa está ligado.
 src/
   domain/          Money, Wallet, WalletLedgerEntry, WagerTransaction, eventos, inbox e outbox
   application/     use cases, worker de pendentes, relay da outbox, consultas, classificação de erros
-  infrastructure/  MikroORM e migrations, SQS, logs e métricas
+    ports/         interfaces que a aplicação usa para falar com banco, relógio e métricas
+  infrastructure/  implementação das portas: MikroORM e migrations, SQS, logs e métricas
+    wiring.ts      raiz de composição: liga cada porta à implementação real
   interfaces/http/ controllers, filtro de erros, correlation id, guard de autenticação (no-op)
   health/          liveness e readiness
 test/

@@ -23,11 +23,23 @@ interfaces/http  ─▶ application ─▶ domain
 infrastructure   ─▶ application ─▶ domain
 ```
 
+As setas são imports, e o teste `test/unit/architecture.test.ts` confere essa regra no código: o domínio não importa nenhuma outra camada nem framework, e a aplicação não importa infraestrutura nem interfaces.
+
 O domínio (`src/domain`) é TypeScript puro: não importa NestJS nem MikroORM. As classes têm construtor privado e factories estáticas (`create`, `from`, `open`, `rehydrate`). `rehydrate` reconstrói o que veio do banco sem revalidar transições, como pede a seção 6.0.
 
-A camada de aplicação tem os use cases (`ProcessWagerTransactionUseCase`, `CreateWalletUseCase`), os workers e a classificação única de erros (`error-kind.ts`), que a API e o consumidor usam para decidir o que fazer com cada erro. As portas para fora são `EventPublisher` (a outbox publica sem saber que é SQS) e `ProviderAuthGuard` (ponto de extensão da autenticação).
+A camada de aplicação tem os use cases (`ProcessWagerTransactionUseCase`, `CreateWalletUseCase`), os workers, a classificação única de erros (`error-kind.ts`), que a API e o consumidor usam para decidir o que fazer com cada erro, e o contexto da operação (os ids que acompanham os logs). Ela fala com o mundo de fora só por portas, em `src/application/ports`:
 
-A infraestrutura implementa repositórios, SQS, logs e métricas. O consumidor SQS chama o mesmo use case que a API, com a gravação da inbox passada como um gancho que roda dentro da transação dele.
+| Porta | Para quê | Implementação |
+|---|---|---|
+| `WalletRepositoryPort`, `WagerTransactionRepositoryPort`, `OutboxRepositoryPort` | persistência, incluindo o lock da wallet e o aluguel de pendentes | repositórios MikroORM em `infrastructure/database` |
+| `ClockPort` | a hora de todas as datas gravadas | relógio do banco (`clock_timestamp()`) |
+| `MetricsPort` | fatos de negócio a medir (transação concluída, duplicata, retry) | contadores e histogramas do Prometheus |
+| `EventPublisher` | para onde vão os eventos da outbox | SQS |
+| `ProviderAuthGuard` | autenticação do provedor (hoje no-op) | |
+
+A infraestrutura implementa as portas e monta tudo em `infrastructure/wiring.ts`, a raiz de composição. Os testes trocam uma peça só, como uma outbox que falha de propósito, com `wageringPorts({ outbox: ... })`. O consumidor SQS chama o mesmo use case que a API, com a gravação da inbox passada como um gancho que roda dentro da transação dele.
+
+O MikroORM continua visível na aplicação, de propósito. As portas de persistência recebem o `EntityManager`, porque ele é a transação: tudo que uma operação grava precisa passar pelo mesmo `em.fork().transactional()`. Tirar isso da aplicação exigiria uma porta de Unit of Work só para esconder o ORM que o próprio desafio indica, e a troca de ORM não é um cenário deste serviço.
 
 ## ORM e estratégia transacional
 
@@ -174,7 +186,7 @@ Quando uma transação chega a estado final, as pendentes que apontam para ela f
 
 ## Consumidor SQS
 
-O consumidor tem N leitores em paralelo (`SQS_CONSUMER_CONCURRENCY`, padrão 5), cada um lendo uma mensagem por vez. A ordem por wallet vem da própria FIFO: enquanto uma mensagem de um MessageGroup está em processamento, as próximas do mesmo grupo não são entregues, e grupos diferentes seguem em paralelo. Testei isso no LocalStack antes de escrever: leitura em lote fazia mensagens que só esperavam a vez gastarem entregas, e uma mensagem por leitor resolveu.
+O consumidor tem N leitores em paralelo (`SQS_CONSUMER_CONCURRENCY`, padrão 5), cada um lendo uma mensagem por vez. A ordem por wallet vem da própria FIFO: enquanto uma mensagem de um MessageGroup está em processamento, as próximas do mesmo grupo não são entregues, e grupos diferentes seguem em paralelo. A primeira versão lia em lote, e no LocalStack as mensagens que só esperavam a vez gastavam entregas (o `ApproximateReceiveCount` subia sem processamento). Com uma mensagem por leitor isso não acontece, e o teste "mensagem que só esperou a vez não gasta entregas" em `sqs-consumer.test.ts` prova que ela chega à primeira tentativa com contador 1.
 
 Para cada mensagem:
 
@@ -262,7 +274,7 @@ Os testes de integração usam o Postgres e o LocalStack reais, sem mock de banc
 
 Todo arquivo de integração termina conferindo, em todas as wallets do banco, que o saldo gravado é igual ao reconstruído pelo ledger, como pede a seção 13.
 
-Vários testes nasceram de um bug encontrado em revisão. Cada um foi escrito antes da correção e visto falhando pelo motivo certo. Alguns testes que passavam foram conferidos com mutação (quebrar o código de propósito e ver o teste falhar), porque já houve casos de teste verde que não provava o que dizia provar.
+Vários testes nasceram de um bug encontrado em revisão, e o histórico de commits mostra cada correção junto com o teste que a reproduz (`git log --grep fix:`). Cada um foi escrito antes da correção e visto falhando pelo motivo certo. Alguns testes que passavam foram conferidos com mutação (quebrar o código de propósito e ver o teste falhar), porque já houve casos de teste verde que não provava o que dizia provar.
 
 ## Limitações e o que eu faria com mais tempo
 
