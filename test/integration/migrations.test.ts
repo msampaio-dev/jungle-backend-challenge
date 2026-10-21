@@ -7,6 +7,7 @@ import { createOrmConfig } from "../../src/infrastructure/database/mikro-orm.con
  * descer tudo e subir de novo sem mexer no banco dos outros testes.
  */
 let orm: MikroORM;
+let migrationsUrl: string;
 
 beforeAll(async () => {
   const url = new URL(process.env.DATABASE_TEST_URL!);
@@ -17,7 +18,8 @@ beforeAll(async () => {
   await admin.close();
 
   url.pathname = `/${name}`;
-  orm = await MikroORM.init(createOrmConfig(url.toString()));
+  migrationsUrl = url.toString();
+  orm = await MikroORM.init(createOrmConfig(migrationsUrl));
   await orm.em.getConnection().execute("drop schema public cascade");
   await orm.em.getConnection().execute("create schema public");
 });
@@ -49,4 +51,35 @@ test("sobem num banco vazio, descem por inteiro e sobem de novo", async () => {
 
   expect(await migrator.up()).toHaveLength(total);
   expect(await tables()).toHaveLength(5);
+});
+
+/** Roda o script do container migrate e devolve as linhas de stdout e stderr. */
+async function runMigrateCli(...args: string[]) {
+  const child = Bun.spawn(["bun", "run", "src/infrastructure/database/migrate.ts", ...args], {
+    env: { ...process.env, DATABASE_URL: migrationsUrl },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  return { code, lines: `${out}\n${err}`.split("\n").filter((l) => l.trim() !== "") };
+}
+
+const parsesAsJson = (line: string) => {
+  try {
+    JSON.parse(line);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+test("o script do container migrate também loga em JSON, como a app", async () => {
+  const down = await runMigrateCli("down"); // desce a última e sobe de novo: o migrator loga de verdade
+  const up = await runMigrateCli("up");
+  const usage = await runMigrateCli("sideways");
+
+  expect([down.code, up.code, usage.code]).toEqual([0, 0, 1]);
+  const lines = [...down.lines, ...up.lines, ...usage.lines];
+  expect(lines.length).toBeGreaterThan(3);
+  expect(lines.filter((l) => !parsesAsJson(l))).toEqual([]);
 });
