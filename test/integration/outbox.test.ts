@@ -202,6 +202,11 @@ describe("relay", () => {
     expect(publisher.sentFor(w.walletId)).toEqual(recorded);
   });
 
+  test("a cabeça de cada wallet sai de um índice parcial, só com as pendentes", async () => {
+    const [index] = await sql("select indexdef from pg_indexes where indexname = 'outbox_pending_by_aggregate_idx'");
+    expect(index?.indexdef).toContain("(aggregate_id, occurred_at, id) WHERE (published_at IS NULL)");
+  });
+
   test("ordem por wallet: mensagem do meio em backoff segura as que vêm depois dela", async () => {
     await publishEverything();
     const w = await createWallet(orm, "0.00");
