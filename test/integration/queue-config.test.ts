@@ -37,3 +37,10 @@ test("o LocalStack só fica saudável depois que todas as filas do script de ini
   expect(created).toEqual(["wager-transactions-dlq.fifo", "wager-transactions.fifo", "wagering-events.fifo"]);
   for (const queue of created) expect(healthcheck).toContain(`--queue-name ${queue}`);
 });
+
+test("o script de init é executável no git: sem +x, o LocalStack recusa (Permission denied) fora do Windows", async () => {
+  // no Windows o Docker Desktop monta tudo como executável e esconde o problema;
+  // num clone em Linux ou Mac vale o modo gravado no git
+  const listed = Bun.spawnSync(["git", "ls-files", "-s", "docker/localstack/init-sqs.sh"]).stdout.toString();
+  expect(listed.split(" ")[0]).toBe("100755");
+});
