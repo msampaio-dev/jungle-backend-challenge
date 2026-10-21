@@ -44,3 +44,17 @@ test("o script de init é executável no git: sem +x, o LocalStack recusa (Permi
   const listed = Bun.spawnSync(["git", "ls-files", "-s", "docker/localstack/init-sqs.sh"]).stdout.toString();
   expect(listed.split(" ")[0]).toBe("100755");
 });
+
+test("todo serviço de longa duração reinicia sozinho se cair; só o migrate roda uma vez", async () => {
+  const compose = Bun.YAML.parse(await Bun.file("docker-compose.yml").text()) as {
+    services: Record<string, { restart?: string }>;
+  };
+  const policies = Object.fromEntries(Object.entries(compose.services).map(([name, s]) => [name, s.restart]));
+  expect(policies).toEqual({
+    postgres: "unless-stopped",
+    localstack: "unless-stopped",
+    migrate: "no",
+    app: "unless-stopped",
+    gateway: "unless-stopped",
+  });
+});

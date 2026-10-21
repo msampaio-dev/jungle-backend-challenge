@@ -1,6 +1,7 @@
 services:
   postgres:
     image: postgres:17-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_USER: wagering
       POSTGRES_PASSWORD: wagering
@@ -20,6 +21,7 @@ services:
   # A partir de 2026.03 a imagem passou a exigir token.
   localstack:
     image: localstack/localstack:4.14.0
+    restart: unless-stopped
     environment:
       SERVICES: sqs
       AWS_DEFAULT_REGION: us-east-1
@@ -61,6 +63,8 @@ services:
     build: .
     image: jungle-wagering:local
     pull_policy: build # imagem local: constrói, nunca tenta baixar de um registro
+    # caiu (falta de memória, erro fatal)? volta sozinha; parada de propósito, não
+    restart: unless-stopped
     environment:
       PORT: "3000"
       DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
@@ -89,6 +93,7 @@ services:
   # Entrada única em localhost:3000, distribuindo entre as réplicas da app.
   gateway:
     image: nginx:1.27.5-alpine
+    restart: unless-stopped
     ports:
       - "3000:80"
     volumes:
