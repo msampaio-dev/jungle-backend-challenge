@@ -3,6 +3,9 @@ import { OutboxMessage } from "../../domain/messaging/outbox-message";
 
 type Row = Record<string, unknown>;
 
+/** Primeira chave dos advisory locks da outbox, para não colidir com outros usos. */
+const OUTBOX_LOCK_NAMESPACE = 7001;
+
 export class OutboxRepository {
   /**
    * Chamado dentro da transação da operação de negócio. Evento novo nasce
@@ -21,20 +24,48 @@ export class OutboxRepository {
   }
 
   /**
-   * Trava um lote de mensagens devidas. SKIP LOCKED faz outra instância
-   * pular as que já estão travadas e pegar as próximas, em vez de esperar.
-   * O lock vale até o fim da transação; se o processo morrer, o Postgres
-   * desfaz e as mensagens voltam a ficar disponíveis.
+   * Trava um lote de wallets e devolve as mensagens pendentes delas, na
+   * ordem em que aconteceram. A unidade é a wallet, não a mensagem: travar
+   * mensagens soltas deixava um evento passar na frente de outro da mesma
+   * wallet (o anterior travado por outro relay, ou em backoff).
+   *
+   *  - só entra wallet cuja mensagem pendente mais antiga (a cabeça) está
+   *    devida: cabeça em backoff segura a wallet inteira;
+   *  - pg_try_advisory_xact_lock por wallet: se outro relay já está com ela,
+   *    pula para a próxima em vez de esperar (o SKIP LOCKED, por wallet).
+   *    Vale até o fim da transação; se o processo morrer, o Postgres solta.
+   *
+   * O lock é tentado na ordem das cabeças e só até completar o limite (CTE
+   * materializada, LIMIT por fora). Colisão de hash entre duas wallets só
+   * faz as duas esperarem uma pela outra.
    */
   async claimDue(em: EntityManager, limit: number): Promise<OutboxMessage[]> {
+    const wallets: Row[] = await em.execute(
+      `with heads as materialized (
+         select aggregate_id, next_attempt_at
+           from (select distinct on (aggregate_id) aggregate_id, occurred_at, id, next_attempt_at
+                   from outbox_messages
+                  where published_at is null
+                  order by aggregate_id, occurred_at, id) h
+          where next_attempt_at <= now()
+          order by occurred_at, id
+       )
+       select aggregate_id from heads
+        where pg_try_advisory_xact_lock(${OUTBOX_LOCK_NAMESPACE}, hashtext(aggregate_id::text))
+        limit ?`,
+      [limit],
+    );
+    if (wallets.length === 0) return [];
+
+    // instrução nova, foto nova: o que outro relay publicou e confirmou
+    // antes de soltarmos o lock já não aparece aqui
     const rows: Row[] = await em.execute(
       `select id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at
          from outbox_messages
-        where published_at is null and next_attempt_at <= now()
+        where published_at is null and aggregate_id in (${wallets.map(() => "?").join(", ")})
         order by occurred_at, id
-        limit ?
-        for update skip locked`,
-      [limit],
+        limit ?`,
+      [...wallets.map((w) => w.aggregate_id), limit],
     );
     return rows.map((r) =>
       OutboxMessage.rehydrate({

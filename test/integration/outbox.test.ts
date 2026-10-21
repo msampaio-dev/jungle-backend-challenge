@@ -52,6 +52,27 @@ class CountingPublisher implements EventPublisher {
   }
 }
 
+const idsInOrder = async (walletId: string) =>
+  (await sql("select id from outbox_messages where aggregate_id = ? order by occurred_at, id", [walletId])).map((r) => String(r.id));
+
+/** Publicador real que registra a ordem de envio; pode falhar uma vez ou travar em eventos escolhidos. */
+class OrderPublisher implements EventPublisher {
+  readonly sent: OutboxMessage[] = [];
+  readonly started = new Set<string>();
+  readonly failOnce = new Set<string>();
+  readonly holdOn = new Map<string, Promise<void>>();
+  async publish(message: OutboxMessage): Promise<void> {
+    this.started.add(message.id);
+    if (this.failOnce.delete(message.id)) throw new Error("falha momentânea");
+    await this.holdOn.get(message.id);
+    await sqs.publish(message);
+    this.sent.push(message);
+  }
+  sentFor(walletId: string): string[] {
+    return this.sent.filter((m) => m.aggregateId === walletId).map((m) => m.id);
+  }
+}
+
 describe("eventos gravados junto com a operação", () => {
   test("BET processada gera WagerTransactionProcessed e WalletBalanceChanged", async () => {
     const w = await createWallet(orm, "100.00");
@@ -151,11 +172,77 @@ describe("relay", () => {
 
     const attempts = (await sql("select attempts from outbox_messages where aggregate_id = ? order by occurred_at, id", [w.walletId])).map((r) => r.attempts);
     expect(attempts).toEqual([1, 0, 0, 0, 0]); // os outros não gastaram tentativa
-    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(4); // e saem na próxima rodada
+    // e esperam o primeiro: nenhum evento desta wallet passa na frente dele
+    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(0);
 
-    // o que falhou também sai depois do backoff (e a outbox fica limpa para os próximos testes)
+    // passado o backoff, saem os cinco (e a outbox fica limpa para os próximos testes)
     await sql("update outbox_messages set next_attempt_at = now() where aggregate_id = ? and published_at is null", [w.walletId]);
-    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(1);
+    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(5);
+  });
+
+  test("ordem por wallet: evento em backoff segura os seguintes da mesma wallet, não os de outra", async () => {
+    await publishEverything();
+    const w = await createWallet(orm, "0.00");
+    const other = await createWallet(orm, "0.00");
+    await processor(orm).execute(command(w, { kind: "WIN", amount: "10.00" })); // 2 eventos
+    await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" })); // 1 evento
+    await processor(orm).execute(command(other, { kind: "LOSS", amount: "0.00" }));
+    const recorded = await idsInOrder(w.walletId);
+
+    const publisher = new OrderPublisher();
+    publisher.failOnce.add(recorded[0]!); // o primeiro evento da wallet falha uma vez
+    const relay = new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 });
+    await relay.publishBatch(); // falha no primeiro e para o lote
+    await relay.publishBatch(); // a wallet espera o backoff; a outra segue
+    expect(publisher.sentFor(w.walletId)).toEqual([]);
+    expect(publisher.sentFor(other.walletId)).toHaveLength(1);
+
+    await sql("update outbox_messages set next_attempt_at = now() where aggregate_id = ? and published_at is null", [w.walletId]);
+    await relay.publishBatch();
+    expect(publisher.sentFor(w.walletId)).toEqual(recorded);
+  });
+
+  test("ordem por wallet: mensagem do meio em backoff segura as que vêm depois dela", async () => {
+    await publishEverything();
+    const w = await createWallet(orm, "0.00");
+    for (let i = 0; i < 3; i++) await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+    const recorded = await idsInOrder(w.walletId);
+    await sql("update outbox_messages set next_attempt_at = now() + interval '1 hour' where id = ?", [recorded[1]]);
+
+    const publisher = new OrderPublisher();
+    await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch();
+    expect(publisher.sentFor(w.walletId)).toEqual([recorded[0]!]); // a cabeça sai; a terceira espera a segunda
+
+    await sql("update outbox_messages set next_attempt_at = now() where id = ?", [recorded[1]]);
+    await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch();
+    expect(publisher.sentFor(w.walletId)).toEqual(recorded);
+  });
+
+  test("ordem por wallet: dois relays não publicam a mesma wallet ao mesmo tempo, mas wallets diferentes sim", async () => {
+    await publishEverything();
+    const w = await createWallet(orm, "0.00");
+    const other = await createWallet(orm, "0.00");
+    await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+    await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+    await processor(orm).execute(command(other, { kind: "LOSS", amount: "0.00" }));
+    const recorded = await idsInOrder(w.walletId);
+
+    // o primeiro relay trava no primeiro evento de w, segurando a wallet
+    const publisher = new OrderPublisher();
+    let release!: () => void;
+    publisher.holdOn.set(recorded[0]!, new Promise<void>((resolve) => (release = resolve)));
+    const first = new OutboxRelay(orm, publisher, { batchSize: 1, idleDelayMs: 0 }).publishBatch();
+    while (!release || !publisher.started.has(recorded[0]!)) await Bun.sleep(10);
+
+    // o segundo pula w inteira (não só o evento travado) e publica a outra wallet
+    expect((await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch()).published).toBe(1);
+    expect(publisher.sentFor(w.walletId)).toEqual([]);
+    expect(publisher.sentFor(other.walletId)).toHaveLength(1);
+
+    release();
+    await first;
+    await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch();
+    expect(publisher.sentFor(w.walletId)).toEqual(recorded);
   });
 
   test("dois publicadores na mesma outbox: cada evento sai uma vez", async () => {

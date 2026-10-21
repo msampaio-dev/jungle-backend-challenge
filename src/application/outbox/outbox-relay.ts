@@ -49,8 +49,14 @@ export class OutboxRelay {
       // backoff calculado no relógio do banco, o mesmo que o claimDue compara
       const now = await databaseNow(em);
       const result = { published: 0, failed: 0 };
+      // wallet com mensagem ainda em backoff para ali: as seguintes esperam por ela
+      const waiting = new Set<string>();
 
       for (const message of messages) {
+        if (waiting.has(message.aggregateId) || !message.isDue(now)) {
+          waiting.add(message.aggregateId);
+          continue;
+        }
         try {
           await this.publisher.publish(message);
           message.markPublished(now);
