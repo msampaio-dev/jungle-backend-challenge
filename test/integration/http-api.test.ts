@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
+import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
+import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import { startTestApi, type TestApi } from "./support/http";
 import { expectLedgerInvariant, intentionallyCorrupted } from "./support/invariant";
 
@@ -111,6 +113,32 @@ describe("POST /wagering/transactions — status", () => {
     expect(first.body).toMatchObject({ status: "REJECTED", failureCode: "INSUFFICIENT_FUNDS", balance: { amount: "10.00" } });
     expect(replay.status).toBe(422);
     expect(replay.body.idempotentReplay).toBe(true);
+  });
+
+  test("422 no replay de transação FAILED: é terminal, reenviar não muda nada", async () => {
+    const w = await newWallet();
+    const refund = wager(w, { kind: "REFUND", referenceExternalTransactionId: "nunca-chega" });
+    const pending = await refund.send();
+    expect(pending.status).toBe(202);
+
+    // worker com bug no resolve e limite de 1 falha: a pendente vira FAILED de verdade
+    class BuggyUseCase extends ProcessWagerTransactionUseCase {
+      override async resolve(): Promise<never> {
+        throw new Error("bug no resolve");
+      }
+    }
+    const worker = new PendingReferenceWorker(api.orm, new BuggyUseCase(api.orm), {
+      batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 1,
+    });
+    await api.orm.em
+      .getConnection()
+      .execute("update wager_transactions set next_attempt_at = now() where id = ?", [pending.body.transactionId]);
+    await worker.runOnce();
+
+    const replay = await refund.send();
+    expect(replay.status).toBe(422);
+    expect(replay.body).toMatchObject({ status: "FAILED", failureCode: "PROCESSING_FAILED", idempotentReplay: true });
+    expect(replay.headers.get("retry-after")).toBeNull();
   });
 
   test("202 quando a referência ainda não chegou, dizendo quando consultar de novo", async () => {

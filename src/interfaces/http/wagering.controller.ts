@@ -59,10 +59,12 @@ function statusFor(result: WagerResult): number {
     case WagerTransactionStatus.Pending:
     case WagerTransactionStatus.PendingReference:
       return HttpStatus.ACCEPTED;
+    // Os dois são terminais: reenviar devolve o mesmo resultado. FAILED não é
+    // 500 porque 5xx diz "tente de novo", e aqui cada tentativa seria um
+    // replay que falha igual. status e failureCode no corpo separam os dois.
     case WagerTransactionStatus.Rejected:
-      return HttpStatus.UNPROCESSABLE_ENTITY;
     case WagerTransactionStatus.Failed:
-      return HttpStatus.INTERNAL_SERVER_ERROR;
+      return HttpStatus.UNPROCESSABLE_ENTITY;
   }
 }
 
