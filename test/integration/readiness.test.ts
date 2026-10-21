@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import type { AddressInfo } from "node:net";
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "../../src/app.module";
 import type { TCPSocketListener } from "bun";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { databaseProbe, ReadinessChecker, sqsProbe } from "../../src/health/readiness";
@@ -84,5 +87,34 @@ describe("GET /health/ready", () => {
   test("liveness continua sem consultar nada", async () => {
     const res = await api.call("GET", "/health/live");
     expect(res).toMatchObject({ status: 200, body: { status: "ok" } });
+  });
+});
+
+describe("readiness com o consumidor ligado", () => {
+  test("DLQ inalcançável deixa a instância fora: sem ela, mensagem que nunca vai funcionar não sai da fila", async () => {
+    const main = await createTestQueue("ready-consumer");
+    const saved = { ...process.env };
+    Object.assign(process.env, {
+      DATABASE_URL: process.env.DATABASE_TEST_URL,
+      SQS_CONSUMER_ENABLED: "true",
+      OUTBOX_RELAY_ENABLED: "false",
+      PENDING_REFERENCE_WORKER_ENABLED: "false",
+      SQS_QUEUE_URL: main.queueUrl,
+      SQS_DLQ_URL: `${main.queueUrl.replace(/\.fifo$/, "")}-nao-existe.fifo`,
+    });
+    const app = await NestFactory.create(AppModule, { logger: false });
+    try {
+      await app.listen(0, "127.0.0.1");
+      const { port } = app.getHttpServer().address() as AddressInfo;
+      const res = await fetch(`http://127.0.0.1:${port}/health/ready`);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ status: "unavailable", checks: { database: "up", sqs: "down" } });
+    } finally {
+      await app.close();
+      // devolve o ambiente como estava (atribuir undefined gravaria o texto "undefined")
+      for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key];
+      Object.assign(process.env, saved);
+      await main.delete();
+    }
   });
 });

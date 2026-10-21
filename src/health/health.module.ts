@@ -11,9 +11,12 @@ import { databaseProbe, type Probe, ReadinessChecker, sqsProbe } from "./readine
     {
       provide: ReadinessChecker,
       useFactory: (orm: MikroORM) => {
-        // só exige a fila de quem está ligado: consumidor lê uma, relay publica em outra
+        // só exige as filas de quem está ligado: o consumidor lê a principal e
+        // manda para a DLQ o que nunca vai funcionar; o relay publica nos eventos
+        const consumer = isEnabled("SQS_CONSUMER_ENABLED");
         const queueUrls = [
-          isEnabled("SQS_CONSUMER_ENABLED") ? process.env.SQS_QUEUE_URL : undefined,
+          consumer ? process.env.SQS_QUEUE_URL : undefined,
+          consumer ? process.env.SQS_DLQ_URL : undefined,
           isEnabled("OUTBOX_RELAY_ENABLED") ? process.env.SQS_EVENTS_QUEUE_URL : undefined,
         ].filter((url): url is string => Boolean(url));
         const sqs = createSqsClient({ requestTimeoutMs: 2_000 });
