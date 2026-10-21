@@ -30,7 +30,7 @@ import { OutboxRepository } from "../../infrastructure/database/outbox.repositor
 import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
 import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { IdempotencyConflictError, WalletNotFoundError } from "../errors";
-import { addToContext } from "../../infrastructure/observability/context";
+import { addToContext } from "../shared/operation-context";
 import { countLockConflict, metrics } from "../../infrastructure/observability/metrics";
 import { payloadHash } from "./payload-hash";
 

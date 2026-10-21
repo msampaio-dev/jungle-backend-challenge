@@ -2,7 +2,7 @@ import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { databaseNow } from "../../infrastructure/database/clock";
 import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
-import { describeError } from "../../infrastructure/observability/json-logger";
+import { describeError } from "../shared/describe-error";
 import { metrics } from "../../infrastructure/observability/metrics";
 import { DEFAULT_FAILURE_BACKOFF, FailureBackoff, type FailureBackoffOptions } from "../shared/failure-backoff";
 import type { EventPublisher } from "./event-publisher";

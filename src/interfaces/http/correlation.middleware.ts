@@ -1,7 +1,7 @@
 import { Injectable, Logger, type NestMiddleware } from "@nestjs/common";
 import type { NextFunction, Request, Response } from "express";
 import { hostname } from "node:os";
-import { runWithContext } from "../../infrastructure/observability/context";
+import { runWithContext } from "../../application/shared/operation-context";
 
 /** Só o que é seguro de repetir em logs e headers; o resto é trocado por um id novo. */
 const VALID_CORRELATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;

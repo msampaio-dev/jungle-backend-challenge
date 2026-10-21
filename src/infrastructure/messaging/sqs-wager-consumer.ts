@@ -25,9 +25,9 @@ import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
-import { runWithContext } from "../observability/context";
+import { runWithContext } from "../../application/shared/operation-context";
 import { metrics } from "../observability/metrics";
-import { describeError } from "../observability/json-logger";
+import { describeError } from "../../application/shared/describe-error";
 
 export interface SqsConsumerOptions {
   queueUrl: string;

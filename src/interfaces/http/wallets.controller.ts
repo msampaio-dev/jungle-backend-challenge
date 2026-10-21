@@ -1,6 +1,6 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Inject, Param, Post, Query, UseGuards } from "@nestjs/common";
 import { InvalidRequestError } from "../../application/errors";
-import { currentContext } from "../../infrastructure/observability/context";
+import { currentContext } from "../../application/shared/operation-context";
 import { type WalletView, WalletQueries } from "../../application/queries/wallet-queries";
 import { CreateWalletUseCase } from "../../application/wallet/create-wallet.use-case";
 import type { MoneyProps } from "../../domain/shared/money";

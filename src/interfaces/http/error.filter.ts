@@ -2,7 +2,7 @@ import { type ArgumentsHost, Catch, type ExceptionFilter, HttpException, HttpSta
 import type { Response } from "express";
 import { classifyError, ErrorKind, errorCode } from "../../application/error-kind";
 import { ApplicationError } from "../../application/errors";
-import { describeError } from "../../infrastructure/observability/json-logger";
+import { describeError } from "../../application/shared/describe-error";
 
 const STATUS_BY_KIND: Record<ErrorKind, number> = {
   [ErrorKind.InvalidInput]: HttpStatus.BAD_REQUEST,

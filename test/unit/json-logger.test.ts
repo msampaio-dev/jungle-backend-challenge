@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { UniqueConstraintViolationException } from "@mikro-orm/core";
-import { addToContext, runWithContext } from "../../src/infrastructure/observability/context";
-import { describeError, JsonLogger } from "../../src/infrastructure/observability/json-logger";
+import { addToContext, runWithContext } from "../../src/application/shared/operation-context";
+import { describeError } from "../../src/application/shared/describe-error";
+import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 
 function capture() {
   const lines: Array<Record<string, unknown>> = [];
