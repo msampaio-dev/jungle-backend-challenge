@@ -14,6 +14,7 @@ import { JsonLogger } from "../../src/infrastructure/observability/json-logger";
 import { createTestOrm } from "./support/database";
 import { expectLedgerInvariant } from "./support/invariant";
 import { createTestQueue } from "./support/sqs";
+import { waitAtLeast } from "./support/wait";
 
 /**
  * Laços em segundo plano com a dependência fora do ar: a espera entre
@@ -61,7 +62,7 @@ describe("relay da outbox", () => {
     }
     const relay = new OutboxRelay(orm, { publish: async () => {} }, wageringPorts({ outbox: new DownOutbox() }), { batchSize: 50, idleDelayMs: 0, failureBackoff: fast });
     relay.start();
-    await Bun.sleep(WINDOW_MS);
+    await waitAtLeast(WINDOW_MS, () => claims >= 3);
     await relay.stop();
 
     expect(claims).toBeGreaterThanOrEqual(3);
@@ -80,7 +81,7 @@ describe("relay da outbox", () => {
     }
     const relay = new OutboxRelay(orm, { publish: async () => {} }, wageringPorts({ outbox: new FlakyOutbox() }), { batchSize: 50, idleDelayMs: 10, failureBackoff: fast });
     relay.start();
-    await Bun.sleep(WINDOW_MS);
+    await waitAtLeast(WINDOW_MS, () => lines.some((l) => l.msg === "outbox relay recovered"));
     await relay.stop();
 
     expect(lines.filter((l) => l.msg === "outbox relay recovered")).toEqual([
@@ -106,7 +107,7 @@ describe("worker de pendentes", () => {
       { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5, failureBackoff: fast },
     );
     worker.start();
-    await Bun.sleep(WINDOW_MS);
+    await waitAtLeast(WINDOW_MS, () => leases >= 3);
     await worker.stop();
 
     expect(leases).toBeGreaterThanOrEqual(3);
@@ -141,7 +142,7 @@ describe("consumidor SQS", () => {
       concurrency: 1, // espaçamento de um leitor só
     });
     consumer.start();
-    await Bun.sleep(WINDOW_MS);
+    await waitAtLeast(WINDOW_MS, () => receives >= 3);
     await consumer.stop();
 
     expect(receives).toBeGreaterThanOrEqual(3);
@@ -167,7 +168,7 @@ describe("consumidor SQS", () => {
       maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0, pollFailureBackoff: fast, concurrency: 5,
     });
     consumer.start();
-    await Bun.sleep(WINDOW_MS);
+    await waitAtLeast(WINDOW_MS, () => receives > 10);
     await consumer.stop();
 
     // regra do FailureBackoff, compartilhado: uma linha por patamar (20, 40, 80, 160ms = 4)
