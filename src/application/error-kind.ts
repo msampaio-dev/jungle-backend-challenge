@@ -54,6 +54,25 @@ const TRANSIENT_CODES = new Set([
   "53300",
 ]);
 
+/**
+ * Perda de conexão no meio de uma consulta: o driver pg não põe código
+ * nenhum, só a mensagem (o MikroORM a embrulha num DriverException genérico).
+ * Comparar texto é frágil, mas é a única pista; as mensagens são do pg.
+ */
+const CONNECTION_LOST_MESSAGES = [
+  "Connection terminated",
+  "Client has encountered a connection error and is not queryable",
+  "Client was closed and is not queryable",
+];
+
+/** Erros sem código que ainda assim são infraestrutura indisponível. */
+function isConnectionUnavailable(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  // pool sem conexão livre dentro do prazo (pool.acquireTimeoutMillis)
+  if (error.name === "KnexTimeoutError") return true;
+  return CONNECTION_LOST_MESSAGES.some((text) => error.message.includes(text));
+}
+
 export function classifyError(error: unknown): ErrorKind {
   if (
     error instanceof InvalidMoneyError ||
@@ -74,6 +93,7 @@ export function classifyError(error: unknown): ErrorKind {
   }
   const code = (error as { code?: unknown } | null)?.code;
   if (typeof code === "string" && TRANSIENT_CODES.has(code)) return ErrorKind.Transient;
+  if (isConnectionUnavailable(error)) return ErrorKind.Transient;
   return ErrorKind.Unexpected;
 }
 
