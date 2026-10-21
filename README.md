@@ -122,6 +122,8 @@ bun run test
 bun run test:integration
 ```
 
+A CI (`.github/workflows/ci.yml`) roda esses mesmos passos a cada push, num Ubuntu limpo, e no fim sobe o stack completo com três réplicas.
+
 `bun run test` roda os testes de unidade. `bun run test:integration` roda os de integração contra o Postgres e o LocalStack reais, em cerca de 2 minutos. Eles usam um banco próprio, `wagering_test`, que cada arquivo de teste recria do zero rodando as migrations. Cada teste cria as próprias filas no LocalStack. Os testes de vários processos sobem a app de verdade em processos filhos.
 
 Para rodar a app fora do Docker (com os containers de Postgres e LocalStack de pé):
