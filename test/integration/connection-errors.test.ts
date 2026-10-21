@@ -99,3 +99,41 @@ test("worker: queda de conexão não conta como falha da pendente (não leva a F
     .execute("select status, resolution_failures from wager_transactions where id = ?", [pending.transactionId]);
   expect(row).toMatchObject({ status: "PENDING_REFERENCE", resolution_failures: 0 });
 });
+
+describe("espera por conexão livre", () => {
+  test("padrão de 5s, como o lock_timeout (o do knex é 60s)", () => {
+    expect(createOrmConfig(process.env.DATABASE_TEST_URL).pool?.acquireTimeoutMillis).toBe(5_000);
+  });
+
+  test("com o pool cheio, a config da app desiste no prazo, em vez de pendurar a requisição", async () => {
+    const saved = { max: process.env.DATABASE_POOL_MAX, timeout: process.env.DATABASE_ACQUIRE_TIMEOUT_MS };
+    process.env.DATABASE_POOL_MAX = "1";
+    process.env.DATABASE_ACQUIRE_TIMEOUT_MS = "300";
+    const small = await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL));
+    // atribuir undefined a process.env grava o texto "undefined": se não existia, apaga
+    for (const [key, value] of [["DATABASE_POOL_MAX", saved.max], ["DATABASE_ACQUIRE_TIMEOUT_MS", saved.timeout]] as const) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+
+    let release!: () => void;
+    const holding = small.em.fork().transactional(async (em) => {
+      await em.execute("select 1");
+      await new Promise<void>((resolve) => (release = resolve));
+    });
+    while (!release) await Bun.sleep(10);
+    try {
+      const started = performance.now();
+      const outcome = await Promise.race([
+        small.em.getConnection().execute("select 1").then(() => "got a connection", (e: Error) => e.name),
+        Bun.sleep(3_000).then(() => "still waiting after 3s"),
+      ]);
+      expect(outcome).toBe("KnexTimeoutError");
+      expect(performance.now() - started).toBeLessThan(1_000);
+    } finally {
+      release();
+      await holding;
+      await small.close(true);
+    }
+  });
+});

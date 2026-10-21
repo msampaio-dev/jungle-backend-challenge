@@ -23,13 +23,26 @@ const plain = (message: unknown) => String(message).replace(ANSI_COLORS, "").sli
 const ormLogger = new Logger("MikroORM");
 const knexLogger = new Logger("Knex");
 
+/**
+ * Quanto uma operação espera por uma conexão livre do pool. O padrão do
+ * knex é 60s: com o pool cheio, a requisição ficava pendurada um minuto.
+ * 5s, como o lock_timeout da wallet; estourou, é erro transitório (503).
+ */
+function acquireTimeoutMs(): number {
+  const value = Number(process.env.DATABASE_ACQUIRE_TIMEOUT_MS ?? 5_000);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(`invalid DATABASE_ACQUIRE_TIMEOUT_MS: ${process.env.DATABASE_ACQUIRE_TIMEOUT_MS}`);
+  }
+  return value;
+}
+
 export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
   return defineConfig({
     clientUrl,
     entities: [WalletRecordSchema, LedgerEntryRecordSchema, WagerTransactionRecordSchema],
     extensions: [Migrator],
     forceUtcTimezone: true,
-    pool: { min: 0, max: Number(process.env.DATABASE_POOL_MAX ?? 10) },
+    pool: { min: 0, max: Number(process.env.DATABASE_POOL_MAX ?? 10), acquireTimeoutMillis: acquireTimeoutMs() },
     logger: (message) => ormLogger.log({ msg: plain(message) }),
     driverOptions: {
       log: {
