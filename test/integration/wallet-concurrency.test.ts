@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { Money } from "../../src/domain/shared/money";
 import { WagerTransaction, WagerTransactionKind } from "../../src/domain/wagering/wager-transaction";
@@ -119,7 +120,7 @@ describe("proteção extra da version", () => {
 describe("espera pelo lock da wallet", () => {
   test("espera longa desiste com erro transitório (503 / retry) em vez de pendurar", async () => {
     const wallet = await createWallet(orm, "100.00");
-    const impatient = new ProcessWagerTransactionUseCase(orm, new WalletRepository(300));
+    const impatient = new ProcessWagerTransactionUseCase(orm, wageringPorts({ wallets: new WalletRepository(300) }));
 
     // outra transação segura o lock da wallet por 1,5s
     let release!: () => void;

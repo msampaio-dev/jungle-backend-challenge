@@ -1,4 +1,5 @@
 import type { EntityManager } from "@mikro-orm/postgresql";
+import type { OutboxRepositoryPort } from "../../application/ports";
 import { OutboxMessage } from "../../domain/messaging/outbox-message";
 
 type Row = Record<string, unknown>;
@@ -6,7 +7,7 @@ type Row = Record<string, unknown>;
 /** Primeira chave dos advisory locks da outbox, para não colidir com outros usos. */
 const OUTBOX_LOCK_NAMESPACE = 7001;
 
-export class OutboxRepository {
+export class OutboxRepository implements OutboxRepositoryPort {
   /**
    * Chamado dentro da transação da operação de negócio. Evento novo nasce
    * devido AGORA no relógio do banco (o mesmo que o claimDue compara), não

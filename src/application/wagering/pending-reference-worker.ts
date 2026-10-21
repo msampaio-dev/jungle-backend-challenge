@@ -5,13 +5,9 @@ import { OutboxMessage } from "../../domain/messaging/outbox-message";
 import { FailureCode } from "../../domain/wagering/failure-code";
 import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { WagerTransactionStatus } from "../../domain/wagering/wager-transaction";
-import { databaseNow } from "../../infrastructure/database/clock";
 import { addToContext, runWithContext } from "../shared/operation-context";
-import { countLockConflict, metrics } from "../../infrastructure/observability/metrics";
-import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { describeError } from "../shared/describe-error";
-import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
-import { WalletRepository } from "../../infrastructure/database/wallet.repository";
+import type { PendingReferenceLease, WageringPorts } from "../ports";
 import { DEFAULT_FAILURE_BACKOFF, FailureBackoff, type FailureBackoffOptions } from "../shared/failure-backoff";
 import type { ProcessWagerTransactionUseCase } from "./process-wager-transaction.use-case";
 
@@ -36,11 +32,7 @@ export const DEFAULT_PENDING_REFERENCE_WORKER_OPTIONS: PendingReferenceWorkerOpt
 
 export type PendingOutcome = "resolved" | "rescheduled" | "skipped" | "failed" | "gave-up";
 
-interface Lease {
-  id: string;
-  walletId: string;
-  attempts: number;
-}
+type Lease = PendingReferenceLease;
 
 /**
  * Reprocessa transações em PENDING_REFERENCE quando chega a hora.
@@ -61,17 +53,15 @@ export class PendingReferenceWorker {
   constructor(
     private readonly orm: MikroORM,
     private readonly useCase: ProcessWagerTransactionUseCase,
+    private readonly ports: WageringPorts,
     private readonly options: PendingReferenceWorkerOptions = DEFAULT_PENDING_REFERENCE_WORKER_OPTIONS,
-    private readonly wallets = new WalletRepository(),
-    private readonly transactions = new WagerTransactionRepository(),
-    private readonly outbox = new OutboxRepository(),
   ) {}
 
   /** Uma rodada: aluga o que está devido e resolve um por um. */
   async runOnce(): Promise<PendingOutcome[]> {
     const leases = await this.orm.em
       .fork()
-      .transactional((em) => this.transactions.leaseDuePendingReferences(em, this.options.batchSize, this.options.leaseMs));
+      .transactional((em) => this.ports.transactions.leaseDuePendingReferences(em, this.options.batchSize, this.options.leaseMs));
 
     const outcomes: PendingOutcome[] = [];
     for (const lease of leases) {
@@ -94,8 +84,8 @@ export class PendingReferenceWorker {
     const afterCommit: Array<() => void> = [];
     const outcome = await this.orm.em.fork().transactional(async (em): Promise<PendingOutcome> => {
       // wallet primeiro, como no use case: mesma ordem de locks em todo lugar
-      const wallet = await this.wallets.lockById(em, lease.walletId);
-      const tx = await this.transactions.findById(em, lease.id);
+      const wallet = await this.ports.wallets.lockById(em, lease.walletId);
+      const tx = await this.ports.transactions.findById(em, lease.id);
       if (tx) addToContext({ correlationId: tx.correlationId, providerId: tx.providerId });
 
       // Outro worker chegou antes (o aluguel venceu enquanto este demorava):
@@ -109,25 +99,25 @@ export class PendingReferenceWorker {
         return "skipped";
       }
 
-      const now = await databaseNow(em);
+      const now = await this.ports.clock.now(em);
       const expectedVersion = wallet.version;
       const entry = await this.useCase.resolve(em, tx, wallet, now);
 
-      await this.transactions.update(em, tx, now);
-      if (entry) await this.wallets.saveMovement(em, wallet, expectedVersion, entry);
+      await this.ports.transactions.update(em, tx, now);
+      if (entry) await this.ports.wallets.saveMovement(em, wallet, expectedVersion, entry);
 
       if (!tx.isTerminal()) {
-        afterCommit.push(() => metrics.retries.inc({ component: "pending_reference" }));
+        afterCommit.push(() => this.ports.metrics.retryScheduled("pending_reference"));
         return "rescheduled"; // reagendamento não gera evento
       }
-      afterCommit.push(() => metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status }));
+      afterCommit.push(() => this.ports.metrics.transactionCompleted("worker", tx.kind, tx.status));
 
       // em cadeia: um ROLLBACK pendente pode estar esperando por este REFUND
-      await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
+      await this.ports.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
 
       // eventos da resolução continuam o rastro da requisição original
       const ctx = { correlationId: tx.correlationId, occurredAt: now };
-      await this.outbox.insert(
+      await this.ports.outbox.insert(
         em,
         eventsForTransaction(tx, wallet, entry, ctx).map((e) => OutboxMessage.enqueue(e)),
       );
@@ -150,14 +140,14 @@ export class PendingReferenceWorker {
     const message = (error as Error)?.message ?? String(error);
     const log = { transactionId: lease.id, error: describeError(error) };
     try {
-      countLockConflict(error);
+      this.ports.metrics.operationFailed(error);
       if (classifyError(error) === ErrorKind.Transient) {
         this.logger.warn({ msg: "pending reference resolution hit a transient error", ...log });
         return "failed";
       }
       const failures = await this.orm.em
         .fork()
-        .transactional((em) => this.transactions.recordResolutionFailure(em, lease.id, message));
+        .transactional((em) => this.ports.transactions.recordResolutionFailure(em, lease.id, message));
       this.logger.error({ msg: "pending reference resolution failed", ...log, failures });
       if (failures < this.options.maxResolutionFailures) return "failed";
       return await this.giveUp(lease);
@@ -171,23 +161,23 @@ export class PendingReferenceWorker {
   private async giveUp(lease: Lease): Promise<PendingOutcome> {
     const afterCommit: Array<() => void> = [];
     const outcome = await this.orm.em.fork().transactional(async (em): Promise<PendingOutcome> => {
-      const wallet = await this.wallets.lockById(em, lease.walletId);
-      const tx = await this.transactions.findById(em, lease.id);
+      const wallet = await this.ports.wallets.lockById(em, lease.walletId);
+      const tx = await this.ports.transactions.findById(em, lease.id);
       if (!wallet || !tx || tx.status !== WagerTransactionStatus.PendingReference) return "skipped";
 
-      const now = await databaseNow(em);
+      const now = await this.ports.clock.now(em);
       tx.fail(FailureCode.ProcessingFailed);
-      await this.transactions.update(em, tx, now);
+      await this.ports.transactions.update(em, tx, now);
       // quem esperava por esta transação também precisa descobrir que ela falhou
-      await this.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
-      await this.outbox.insert(
+      await this.ports.transactions.wakePendingDependents(em, tx.providerId, tx.externalTransactionId);
+      await this.ports.outbox.insert(
         em,
         eventsForTransaction(tx, wallet, undefined, { correlationId: tx.correlationId, occurredAt: now }).map((e) =>
           OutboxMessage.enqueue(e),
         ),
       );
       afterCommit.push(() => {
-        metrics.transactions.inc({ channel: "worker", kind: tx.kind, status: tx.status });
+        this.ports.metrics.transactionCompleted("worker", tx.kind, tx.status);
         this.logger.error({ msg: "pending reference marked FAILED", transactionId: tx.id });
       });
       return "gave-up";

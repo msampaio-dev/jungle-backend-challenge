@@ -1,4 +1,5 @@
 import type { MikroORM } from "@mikro-orm/postgresql";
+import { wageringPorts } from "../../../src/infrastructure/wiring";
 import { CreateWalletUseCase } from "../../../src/application/wallet/create-wallet.use-case";
 import {
   ProcessWagerTransactionUseCase,
@@ -11,7 +12,7 @@ export interface TestWallet {
 }
 
 export async function createWallet(orm: MikroORM, initial: string, currency = "BRL"): Promise<TestWallet> {
-  const wallet = await new CreateWalletUseCase(orm).execute({
+  const wallet = await new CreateWalletUseCase(orm, wageringPorts()).execute({
     playerId: Bun.randomUUIDv7(),
     initialBalance: { amount: initial, currency },
   });
@@ -40,7 +41,7 @@ export function command(
   };
 }
 
-export const processor = (orm: MikroORM) => new ProcessWagerTransactionUseCase(orm);
+export const processor = (orm: MikroORM) => new ProcessWagerTransactionUseCase(orm, wageringPorts());
 
 /** Estado da carteira lido direto do banco, com o saldo reconstruído pelo ledger. */
 export async function snapshot(orm: MikroORM, walletId: string) {

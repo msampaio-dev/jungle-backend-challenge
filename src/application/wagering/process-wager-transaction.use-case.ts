@@ -25,13 +25,16 @@ import {
 } from "../../domain/wagering/wager-transaction";
 import type { Wallet } from "../../domain/wallet/wallet";
 import { LedgerDirection, type WalletLedgerEntry } from "../../domain/wallet/wallet-ledger-entry";
-import { databaseNow } from "../../infrastructure/database/clock";
-import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
-import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
-import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { IdempotencyConflictError, WalletNotFoundError } from "../errors";
+import type {
+  ClockPort,
+  MetricsPort,
+  OutboxRepositoryPort,
+  WagerTransactionRepositoryPort,
+  WageringPorts,
+  WalletRepositoryPort,
+} from "../ports";
 import { addToContext } from "../shared/operation-context";
-import { countLockConflict, metrics } from "../../infrastructure/observability/metrics";
 import { payloadHash } from "./payload-hash";
 
 /** Entrada comum à API HTTP e ao consumidor SQS. */
@@ -87,13 +90,23 @@ const IDEMPOTENCY_CONSTRAINTS = /wager_tx_idempotency_uq|wager_tx_external_id_uq
 export class ProcessWagerTransactionUseCase {
   private readonly logger = new Logger(ProcessWagerTransactionUseCase.name);
 
+  private readonly wallets: WalletRepositoryPort;
+  private readonly transactions: WagerTransactionRepositoryPort;
+  private readonly outbox: OutboxRepositoryPort;
+  private readonly clock: ClockPort;
+  private readonly metrics: MetricsPort;
+
   constructor(
     private readonly orm: MikroORM,
-    private readonly wallets = new WalletRepository(),
-    private readonly transactions = new WagerTransactionRepository(),
-    private readonly outbox = new OutboxRepository(),
+    ports: WageringPorts,
     private readonly referencePolicy: ReferenceRetryPolicy = DEFAULT_REFERENCE_RETRY_POLICY,
-  ) {}
+  ) {
+    this.wallets = ports.wallets;
+    this.transactions = ports.transactions;
+    this.outbox = ports.outbox;
+    this.clock = ports.clock;
+    this.metrics = ports.metrics;
+  }
 
   async execute(command: SubmitWagerCommand, options: ExecuteOptions = {}): Promise<WagerResult> {
     const channel = options.channel ?? "http";
@@ -115,9 +128,9 @@ export class ProcessWagerTransactionUseCase {
 
         // depois do commit: log e métricas nunca anunciam algo que não foi confirmado
         const seconds = (performance.now() - startedAt) / 1000;
-        if (result.idempotentReplay) metrics.duplicates.inc({ type: "idempotent_replay" });
-        else metrics.transactions.inc({ channel, kind: prepared.kind, status: result.status });
-        metrics.processing.observe({ channel, outcome: result.idempotentReplay ? "replay" : result.status }, seconds);
+        if (result.idempotentReplay) this.metrics.duplicateDetected("idempotent_replay");
+        else this.metrics.transactionCompleted(channel, prepared.kind, result.status);
+        this.metrics.processingObserved(channel, result.idempotentReplay ? "replay" : result.status, seconds);
         addToContext({ transactionId: result.transactionId });
         this.logger.log({
           msg: result.idempotentReplay ? "idempotent replay" : "wager transaction processed",
@@ -134,11 +147,11 @@ export class ProcessWagerTransactionUseCase {
       } catch (error) {
         const raced = error instanceof UniqueConstraintViolationException && IDEMPOTENCY_CONSTRAINTS.test(error.message);
         if (raced && attempt === 1) {
-          metrics.retries.inc({ component: "idempotency_race" });
+          this.metrics.retryScheduled("idempotency_race");
           continue;
         }
-        countLockConflict(error);
-        metrics.processing.observe({ channel, outcome: "error" }, (performance.now() - startedAt) / 1000);
+        this.metrics.operationFailed(error);
+        this.metrics.processingObserved(channel, "error", (performance.now() - startedAt) / 1000);
         throw error;
       }
     }
@@ -196,7 +209,7 @@ export class ProcessWagerTransactionUseCase {
     trace: Omit<EventContext, "occurredAt">,
   ): Promise<WagerResult> {
     // a chegada é carimbada no relógio do banco, como todas as outras datas
-    const receivedAt = await databaseNow(em);
+    const receivedAt = await this.clock.now(em);
 
     // 1. Replay barato, sem lock.
     const known = await this.transactions.findByIdempotencyKey(em, prepared.providerId, prepared.idempotencyKey);
@@ -217,7 +230,7 @@ export class ProcessWagerTransactionUseCase {
 
     const tx = WagerTransaction.create({ ...prepared, createdAt: receivedAt });
     // hora de processar (depois de esperar o lock), também do banco
-    const now = await databaseNow(em);
+    const now = await this.clock.now(em);
     const expectedVersion = wallet.version;
     const entry = await this.resolve(em, tx, wallet, now);
 
@@ -318,7 +331,7 @@ export class ProcessWagerTransactionUseCase {
     }
     // transação ainda pendente não tem saldo final: devolve o saldo atual
     const balance = known.resultBalance ?? (await this.wallets.findById(em, known.walletId))!.balance;
-    return toResult(known, balance, true, await databaseNow(em));
+    return toResult(known, balance, true, await this.clock.now(em));
   }
 }
 

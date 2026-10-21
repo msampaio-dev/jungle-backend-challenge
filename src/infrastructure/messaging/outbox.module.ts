@@ -1,4 +1,5 @@
 import { Inject, Module, type OnApplicationBootstrap, type OnApplicationShutdown } from "@nestjs/common";
+import { wageringPorts } from "../wiring";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { OutboxRelay } from "../../application/outbox/outbox-relay";
 import { isEnabled, requiredEnv } from "../config";
@@ -11,7 +12,7 @@ import { createSqsClient, SqsEventPublisher } from "./sqs";
       // desligado: nem monta o relay, então a fila de eventos não precisa estar configurada
       useFactory: (orm: MikroORM) =>
         isEnabled("OUTBOX_RELAY_ENABLED")
-          ? new OutboxRelay(orm, new SqsEventPublisher(createSqsClient(), requiredEnv("SQS_EVENTS_QUEUE_URL")))
+          ? new OutboxRelay(orm, new SqsEventPublisher(createSqsClient(), requiredEnv("SQS_EVENTS_QUEUE_URL")), wageringPorts())
           : null,
       inject: [MikroORM],
     },

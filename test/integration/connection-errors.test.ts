@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { classifyError, ErrorKind, errorCode } from "../../src/application/error-kind";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
@@ -89,7 +90,7 @@ test("worker: queda de conexão não conta como falha da pendente (não leva a F
       throw lost;
     }
   }
-  const worker = new PendingReferenceWorker(orm, new FailoverUseCase(orm), {
+  const worker = new PendingReferenceWorker(orm, new FailoverUseCase(orm, wageringPorts()), wageringPorts(), {
     batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 1,
   });
   await orm.em.getConnection().execute("update wager_transactions set next_attempt_at = now() where id = ?", [pending.transactionId]);

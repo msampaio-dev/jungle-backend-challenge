@@ -1,4 +1,5 @@
 import type { EntityManager } from "@mikro-orm/postgresql";
+import type { PendingReferenceLease, WagerTransactionRepositoryPort } from "../../application/ports";
 import { Money } from "../../domain/shared/money";
 import { FailureCode } from "../../domain/wagering/failure-code";
 import {
@@ -8,7 +9,7 @@ import {
 } from "../../domain/wagering/wager-transaction";
 import { WagerTransactionRecord } from "./records";
 
-export class WagerTransactionRepository {
+export class WagerTransactionRepository implements WagerTransactionRepositoryPort {
   async findById(em: EntityManager, id: string): Promise<WagerTransaction | null> {
     return this.findOne(em, { id });
   }
@@ -127,7 +128,7 @@ export class WagerTransactionRepository {
     em: EntityManager,
     limit: number,
     leaseMs: number,
-  ): Promise<Array<{ id: string; walletId: string; attempts: number }>> {
+  ): Promise<PendingReferenceLease[]> {
     const rows: Array<Record<string, unknown>> = await em.execute(
       `update wager_transactions
           set next_attempt_at = now() + make_interval(secs => ? / 1000.0)

@@ -1,5 +1,5 @@
 import { Module } from "@nestjs/common";
-import { ApplicationModule } from "./application/application.module";
+import { ApplicationModule } from "./infrastructure/application.module";
 import { HealthModule } from "./health/health.module";
 import { DatabaseModule } from "./infrastructure/database/database.module";
 import { OutboxModule } from "./infrastructure/messaging/outbox.module";

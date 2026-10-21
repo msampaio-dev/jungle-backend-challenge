@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
 import { startTestApi, type TestApi } from "./support/http";
@@ -127,7 +128,7 @@ describe("POST /wagering/transactions — status", () => {
         throw new Error("bug no resolve");
       }
     }
-    const worker = new PendingReferenceWorker(api.orm, new BuggyUseCase(api.orm), {
+    const worker = new PendingReferenceWorker(api.orm, new BuggyUseCase(api.orm, wageringPorts()), wageringPorts(), {
       batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 1,
     });
     await api.orm.em

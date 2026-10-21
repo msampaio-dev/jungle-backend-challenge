@@ -1,4 +1,5 @@
 import type { EntityManager } from "@mikro-orm/postgresql";
+import type { ClockPort } from "../../application/ports";
 
 /**
  * Hora atual do banco. Agendamentos (próxima checagem da referência,
@@ -14,3 +15,6 @@ export async function databaseNow(em: EntityManager): Promise<Date> {
   const [row] = await em.execute("select clock_timestamp() as now");
   return new Date(row!.now);
 }
+
+/** Adaptador da porta de relógio da aplicação. */
+export const databaseClock: ClockPort = { now: databaseNow };

@@ -5,11 +5,8 @@ import { eventsForTransaction } from "../../domain/messaging/wagering-events";
 import { Money, type MoneyProps } from "../../domain/shared/money";
 import { WagerTransaction } from "../../domain/wagering/wager-transaction";
 import { Wallet } from "../../domain/wallet/wallet";
-import { databaseNow } from "../../infrastructure/database/clock";
-import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
-import { WagerTransactionRepository } from "../../infrastructure/database/wager-transaction.repository";
-import { WalletRepository } from "../../infrastructure/database/wallet.repository";
 import { InvalidRequestError, WalletAlreadyExistsError } from "../errors";
+import type { WageringPorts } from "../ports";
 import { payloadHash } from "../wagering/payload-hash";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -23,9 +20,7 @@ export interface CreateWalletCommand {
 export class CreateWalletUseCase {
   constructor(
     private readonly orm: MikroORM,
-    private readonly wallets = new WalletRepository(),
-    private readonly transactions = new WagerTransactionRepository(),
-    private readonly outbox = new OutboxRepository(),
+    private readonly ports: Pick<WageringPorts, "wallets" | "transactions" | "outbox" | "clock">,
   ) {}
 
   /** Wallet, transação OPENING, lançamento CREDIT e eventos na mesma transação SQL. */
@@ -43,7 +38,7 @@ export class CreateWalletUseCase {
     try {
       return await this.orm.em.fork().transactional(async (em) => {
         // a wallet nasce já dentro da transação, com a data do relógio do banco
-        const now = await databaseNow(em);
+        const now = await this.ports.clock.now(em);
         const { wallet, openingEntry } = Wallet.open({
           id: walletId,
           playerId,
@@ -53,7 +48,7 @@ export class CreateWalletUseCase {
           at: now,
         });
 
-        await this.wallets.insert(em, wallet);
+        await this.ports.wallets.insert(em, wallet);
         if (openingEntry) {
           const opening = WagerTransaction.opening({
             id: openingTransactionId,
@@ -63,10 +58,10 @@ export class CreateWalletUseCase {
             payloadHash: payloadHash({ kind: "OPENING", walletId, playerId, money: initialBalance.toJSON() }),
             at: now,
           });
-          await this.transactions.insert(em, opening, now);
-          await this.wallets.insertEntry(em, openingEntry);
+          await this.ports.transactions.insert(em, opening, now);
+          await this.ports.wallets.insertEntry(em, openingEntry);
           const ctx = { correlationId: command.correlationId ?? openingTransactionId, occurredAt: now };
-          await this.outbox.insert(
+          await this.ports.outbox.insert(
             em,
             eventsForTransaction(opening, wallet, openingEntry, ctx).map((e) => OutboxMessage.enqueue(e)),
           );

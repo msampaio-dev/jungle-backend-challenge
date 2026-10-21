@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { WalletQueries } from "../../src/application/queries/wallet-queries";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
@@ -41,7 +42,7 @@ function random(seed: number) {
 
 test("invariantes valem depois de uma carga mista, concorrente e fora de ordem", async () => {
   const rnd = random(42);
-  const useCase = new ProcessWagerTransactionUseCase(orm);
+  const useCase = new ProcessWagerTransactionUseCase(orm, wageringPorts());
   const commands: SubmitWagerCommand[] = [];
 
   const wallets = await Promise.all(Array.from({ length: 8 }, () => createWallet(orm, "200.00")));
@@ -73,7 +74,7 @@ test("invariantes valem depois de uma carga mista, concorrente e fora de ordem",
   await Promise.all(all.map((c) => useCase.execute(c)));
 
   // tudo que ficou esperando referência agora tem a referência: o worker resolve
-  const worker = new PendingReferenceWorker(orm, useCase, { batchSize: 100, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
+  const worker = new PendingReferenceWorker(orm, useCase, wageringPorts(), { batchSize: 100, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
   for (let round = 0; round < 5; round++) {
     await orm.em.getConnection().execute("update wager_transactions set next_attempt_at = now() where status = 'PENDING_REFERENCE'");
     if ((await worker.runOnce()).length === 0) break;

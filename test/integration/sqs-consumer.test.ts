@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import { DeleteMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { ConnectionException } from "@mikro-orm/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
@@ -45,7 +46,7 @@ afterAll(async () => {
   }
 });
 
-const useCase = () => new ProcessWagerTransactionUseCase(orm);
+const useCase = () => new ProcessWagerTransactionUseCase(orm, wageringPorts());
 const consumer = (uc: Pick<ProcessWagerTransactionUseCase, "execute"> = useCase(), client: SQSClient = main.client) =>
   new SqsWagerConsumer(client, orm, uc as ProcessWagerTransactionUseCase, options);
 

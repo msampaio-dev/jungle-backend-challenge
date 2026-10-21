@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { IdempotencyConflictError, WalletAlreadyExistsError, WalletNotFoundError } from "../../src/application/errors";
 import { CreateWalletUseCase } from "../../src/application/wallet/create-wallet.use-case";
@@ -59,7 +60,7 @@ describe("criação de wallet", () => {
   test("segunda wallet do mesmo jogador e moeda é conflito", async () => {
     const w = await wallet();
     await expect(
-      new CreateWalletUseCase(orm).execute({ playerId: w.playerId, initialBalance: { amount: "1.00", currency: "BRL" } }),
+      new CreateWalletUseCase(orm, wageringPorts()).execute({ playerId: w.playerId, initialBalance: { amount: "1.00", currency: "BRL" } }),
     ).rejects.toThrow(WalletAlreadyExistsError);
   });
 });

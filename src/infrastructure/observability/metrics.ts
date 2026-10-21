@@ -1,4 +1,5 @@
 import { DeadlockException, LockWaitTimeoutException } from "@mikro-orm/core";
+import type { MetricsPort } from "../../application/ports";
 import { Counter, Histogram, Registry } from "prom-client";
 
 /**
@@ -82,3 +83,15 @@ export function countLockConflict(error: unknown): boolean {
   if (type) metrics.lockConflicts.inc({ type });
   return type !== undefined;
 }
+
+/** Adaptador da porta de métricas da aplicação: cada fato de negócio vira um contador ou histograma. */
+export const prometheusMetrics: MetricsPort = {
+  transactionCompleted: (channel, kind, status) => metrics.transactions.inc({ channel, kind, status }),
+  duplicateDetected: (type) => metrics.duplicates.inc({ type }),
+  retryScheduled: (component) => metrics.retries.inc({ component }),
+  processingObserved: (channel, outcome, seconds) => metrics.processing.observe({ channel, outcome }, seconds),
+  outboxPublished: (delaySeconds) => metrics.outboxPublishDelay.observe(delaySeconds),
+  operationFailed: (error) => {
+    countLockConflict(error);
+  },
+};

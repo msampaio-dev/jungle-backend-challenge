@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import type { AddressInfo } from "node:net";
 import { ConnectionException } from "@mikro-orm/core";
 import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
@@ -50,7 +51,7 @@ async function delta(name: string, labels: Record<string, string>, action: () =>
   return (await value(name, labels, series)) - before;
 }
 
-const useCase = () => new ProcessWagerTransactionUseCase(api.orm);
+const useCase = () => new ProcessWagerTransactionUseCase(api.orm, wageringPorts());
 
 describe("/metrics", () => {
   test("expõe todas as métricas pedidas, no formato Prometheus, sem autenticação", async () => {
@@ -127,7 +128,7 @@ describe("locks", () => {
     });
     await isLocked;
 
-    const impatient = new ProcessWagerTransactionUseCase(api.orm, new WalletRepository(200));
+    const impatient = new ProcessWagerTransactionUseCase(api.orm, wageringPorts({ wallets: new WalletRepository(200) }));
     const n = await delta("wallet_lock_conflicts_total", { type: "lock_timeout" }, () =>
       impatient.execute(command(w)).catch(() => {}),
     );
@@ -147,7 +148,7 @@ describe("outbox", () => {
       "outbox_publish_delay_seconds",
       {},
       async () => {
-        const relay = new OutboxRelay(api.orm, { publish: async () => {} }, { batchSize: 500, idleDelayMs: 0 });
+        const relay = new OutboxRelay(api.orm, { publish: async () => {} }, wageringPorts(), { batchSize: 500, idleDelayMs: 0 });
         while ((await relay.publishBatch()).published > 0);
       },
       "outbox_publish_delay_seconds_count",
@@ -161,7 +162,7 @@ describe("outbox", () => {
     await createWallet(api.orm, "100.00");
     const down = { publish: async () => Promise.reject(new Error("sqs down")) };
     const n = await delta("wagering_retries_total", { component: "outbox_publish" }, () =>
-      new OutboxRelay(api.orm, down).publishBatch(),
+      new OutboxRelay(api.orm, down, wageringPorts()).publishBatch(),
     );
     expect(n).toBe(1);
     await api.orm.em.getConnection().execute("update outbox_messages set published_at = now() where published_at is null");
@@ -175,7 +176,7 @@ describe("pendentes de referência", () => {
     expect(await value("wagering_pending_references")).toBeGreaterThanOrEqual(1);
 
     await api.orm.em.getConnection().execute("update wager_transactions set next_attempt_at = now() where status = 'PENDING_REFERENCE'");
-    const worker = new PendingReferenceWorker(api.orm, useCase(), { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
+    const worker = new PendingReferenceWorker(api.orm, useCase(), wageringPorts(), { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
     const n = await delta("wagering_retries_total", { component: "pending_reference" }, () => worker.runOnce());
     expect(n).toBeGreaterThanOrEqual(1);
   });
@@ -195,10 +196,8 @@ describe("métricas só depois do commit", () => {
     const worker = new PendingReferenceWorker(
       api.orm,
       useCase(),
+      wageringPorts({ outbox: new BrokenOutbox() }),
       { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 },
-      undefined,
-      undefined,
-      new BrokenOutbox(),
     );
     const labels = { channel: "worker", kind: "REFUND", status: "PROCESSED" };
     expect(await delta("wagering_transactions_total", labels, () => worker.runOnce())).toBe(0);
@@ -211,7 +210,7 @@ describe("métricas só depois do commit", () => {
         throw new Error("disk full");
       }
     }
-    const relay = new OutboxRelay(api.orm, { publish: async () => {} }, { batchSize: 1, idleDelayMs: 0 }, new BrokenSave());
+    const relay = new OutboxRelay(api.orm, { publish: async () => {} }, wageringPorts({ outbox: new BrokenSave() }), { batchSize: 1, idleDelayMs: 0 });
     const n = await delta(
       "outbox_publish_delay_seconds",
       {},

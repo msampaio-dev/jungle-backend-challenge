@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import { MikroORM } from "@mikro-orm/postgresql";
 import type { EventPublisher } from "../../src/application/outbox/event-publisher";
 import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
@@ -39,7 +40,7 @@ const pendingCount = async () => Number((await sql("select count(*)::int as n fr
 
 /** Esvazia a outbox entre testes, para cada teste contar só o que gerou. */
 async function publishEverything(): Promise<void> {
-  const relay = new OutboxRelay(orm, sqs, { batchSize: 100, idleDelayMs: 0 });
+  const relay = new OutboxRelay(orm, sqs, wageringPorts(), { batchSize: 100, idleDelayMs: 0 });
   while ((await relay.publishBatch()).published > 0);
 }
 
@@ -113,7 +114,7 @@ describe("eventos gravados junto com a operação", () => {
         throw new Error("disk full");
       }
     }
-    const broken = new ProcessWagerTransactionUseCase(orm, undefined, undefined, new BrokenOutbox());
+    const broken = new ProcessWagerTransactionUseCase(orm, wageringPorts({ outbox: new BrokenOutbox() }));
 
     await expect(broken.execute(command(w, { externalTransactionId: "atomic-1" }))).rejects.toThrow("disk full");
 
@@ -129,7 +130,7 @@ describe("relay", () => {
     const w = await createWallet(orm, "0.00");
     await processor(orm).execute(command(w, { kind: "WIN", amount: "10.00" }));
 
-    const relay = new OutboxRelay(orm, sqs);
+    const relay = new OutboxRelay(orm, sqs, wageringPorts());
     expect((await relay.publishBatch()).published).toBe(2);
     expect((await relay.publishBatch()).published).toBe(0);
     expect((await outboxFor(w.walletId)).every((r) => r.published_at !== null)).toBe(true);
@@ -150,14 +151,14 @@ describe("relay", () => {
     await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
 
     const down: EventPublisher = { publish: async () => Promise.reject(new Error("sqs unavailable")) };
-    expect(await new OutboxRelay(orm, down).publishBatch()).toEqual({ published: 0, failed: 1 });
+    expect(await new OutboxRelay(orm, down, wageringPorts()).publishBatch()).toEqual({ published: 0, failed: 1 });
 
     const [row] = await sql("select attempts, last_error, published_at, next_attempt_at > now() as later from outbox_messages where aggregate_id = ?", [w.walletId]);
     expect(row).toMatchObject({ attempts: 1, last_error: "sqs unavailable", published_at: null, later: true });
 
     // depois do backoff, outro relay publica
     await sql("update outbox_messages set next_attempt_at = now() where aggregate_id = ?", [w.walletId]);
-    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(1);
+    expect((await new OutboxRelay(orm, sqs, wageringPorts()).publishBatch()).published).toBe(1);
   });
 
   test("SQS fora do ar: o lote para na primeira falha em vez de insistir em todos", async () => {
@@ -167,17 +168,17 @@ describe("relay", () => {
 
     let calls = 0;
     const down: EventPublisher = { publish: async () => { calls++; throw new Error("sqs down"); } };
-    expect(await new OutboxRelay(orm, down).publishBatch()).toEqual({ published: 0, failed: 1 });
+    expect(await new OutboxRelay(orm, down, wageringPorts()).publishBatch()).toEqual({ published: 0, failed: 1 });
     expect(calls).toBe(1);
 
     const attempts = (await sql("select attempts from outbox_messages where aggregate_id = ? order by occurred_at, id", [w.walletId])).map((r) => r.attempts);
     expect(attempts).toEqual([1, 0, 0, 0, 0]); // os outros não gastaram tentativa
     // e esperam o primeiro: nenhum evento desta wallet passa na frente dele
-    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(0);
+    expect((await new OutboxRelay(orm, sqs, wageringPorts()).publishBatch()).published).toBe(0);
 
     // passado o backoff, saem os cinco (e a outbox fica limpa para os próximos testes)
     await sql("update outbox_messages set next_attempt_at = now() where aggregate_id = ? and published_at is null", [w.walletId]);
-    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(5);
+    expect((await new OutboxRelay(orm, sqs, wageringPorts()).publishBatch()).published).toBe(5);
   });
 
   test("ordem por wallet: evento em backoff segura os seguintes da mesma wallet, não os de outra", async () => {
@@ -191,7 +192,7 @@ describe("relay", () => {
 
     const publisher = new OrderPublisher();
     publisher.failOnce.add(recorded[0]!); // o primeiro evento da wallet falha uma vez
-    const relay = new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 });
+    const relay = new OutboxRelay(orm, publisher, wageringPorts(), { batchSize: 100, idleDelayMs: 0 });
     await relay.publishBatch(); // falha no primeiro e para o lote
     await relay.publishBatch(); // a wallet espera o backoff; a outra segue
     expect(publisher.sentFor(w.walletId)).toEqual([]);
@@ -215,11 +216,11 @@ describe("relay", () => {
     await sql("update outbox_messages set next_attempt_at = now() + interval '1 hour' where id = ?", [recorded[1]]);
 
     const publisher = new OrderPublisher();
-    await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch();
+    await new OutboxRelay(orm, publisher, wageringPorts(), { batchSize: 100, idleDelayMs: 0 }).publishBatch();
     expect(publisher.sentFor(w.walletId)).toEqual([recorded[0]!]); // a cabeça sai; a terceira espera a segunda
 
     await sql("update outbox_messages set next_attempt_at = now() where id = ?", [recorded[1]]);
-    await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch();
+    await new OutboxRelay(orm, publisher, wageringPorts(), { batchSize: 100, idleDelayMs: 0 }).publishBatch();
     expect(publisher.sentFor(w.walletId)).toEqual(recorded);
   });
 
@@ -236,17 +237,17 @@ describe("relay", () => {
     const publisher = new OrderPublisher();
     let release!: () => void;
     publisher.holdOn.set(recorded[0]!, new Promise<void>((resolve) => (release = resolve)));
-    const first = new OutboxRelay(orm, publisher, { batchSize: 1, idleDelayMs: 0 }).publishBatch();
+    const first = new OutboxRelay(orm, publisher, wageringPorts(), { batchSize: 1, idleDelayMs: 0 }).publishBatch();
     while (!release || !publisher.started.has(recorded[0]!)) await Bun.sleep(10);
 
     // o segundo pula w inteira (não só o evento travado) e publica a outra wallet
-    expect((await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch()).published).toBe(1);
+    expect((await new OutboxRelay(orm, publisher, wageringPorts(), { batchSize: 100, idleDelayMs: 0 }).publishBatch()).published).toBe(1);
     expect(publisher.sentFor(w.walletId)).toEqual([]);
     expect(publisher.sentFor(other.walletId)).toHaveLength(1);
 
     release();
     await first;
-    await new OutboxRelay(orm, publisher, { batchSize: 100, idleDelayMs: 0 }).publishBatch();
+    await new OutboxRelay(orm, publisher, wageringPorts(), { batchSize: 100, idleDelayMs: 0 }).publishBatch();
     expect(publisher.sentFor(w.walletId)).toEqual(recorded);
   });
 
@@ -261,8 +262,8 @@ describe("relay", () => {
       while ((await relay.publishBatch()).published > 0);
     };
     await Promise.all([
-      drainWith(new OutboxRelay(orm, counter, { batchSize: 7, idleDelayMs: 0 })),
-      drainWith(new OutboxRelay(orm, counter, { batchSize: 7, idleDelayMs: 0 })),
+      drainWith(new OutboxRelay(orm, counter, wageringPorts(), { batchSize: 7, idleDelayMs: 0 })),
+      drainWith(new OutboxRelay(orm, counter, wageringPorts(), { batchSize: 7, idleDelayMs: 0 })),
     ]);
 
     expect(expected).toBe(80);
@@ -279,7 +280,7 @@ describe("crash", () => {
     await processor(orm).execute(command(w)); // commit confirmado; nenhum relay rodou ("processo morreu")
 
     expect(await pendingCount()).toBe(4);
-    const otherInstance = new OutboxRelay(orm, sqs);
+    const otherInstance = new OutboxRelay(orm, sqs, wageringPorts());
     expect((await otherInstance.publishBatch()).published).toBe(4);
   });
 
@@ -306,7 +307,7 @@ describe("crash", () => {
     if (poolMax === undefined) delete process.env.DATABASE_POOL_MAX;
     else process.env.DATABASE_POOL_MAX = poolMax;
     const [{ pid }] = (await dyingOrm.em.getConnection().execute("select pg_backend_pid() as pid")) as [{ pid: number }];
-    const dying = new OutboxRelay(dyingOrm, stuck).publishBatch();
+    const dying = new OutboxRelay(dyingOrm, stuck, wageringPorts()).publishBatch();
     const outcome = dying.then(
       () => "committed",
       () => "died",
@@ -314,7 +315,7 @@ describe("crash", () => {
     while (sent.length === 0) await Bun.sleep(20);
 
     // enquanto ele segura o lock, outra instância não pega o mesmo evento
-    expect((await new OutboxRelay(orm, sqs).publishBatch()).published).toBe(0);
+    expect((await new OutboxRelay(orm, sqs, wageringPorts()).publishBatch()).published).toBe(0);
 
     // "kill -9": o Postgres derruba a conexão do processo que travou
     const [killed] = await sql("select pg_terminate_backend(?) as ok", [pid]);
@@ -326,7 +327,7 @@ describe("crash", () => {
 
     // o lock foi solto e o evento continua pendente: at-least-once
     const counter = new CountingPublisher();
-    expect((await new OutboxRelay(orm, counter).publishBatch()).published).toBe(1);
+    expect((await new OutboxRelay(orm, counter, wageringPorts()).publishBatch()).published).toBe(1);
     expect(counter.sent.get(sent[0]!)).toBe(1); // segunda entrega do mesmo eventId
   });
 });

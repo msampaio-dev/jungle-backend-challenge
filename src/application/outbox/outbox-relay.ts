@@ -1,10 +1,8 @@
 import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
-import { databaseNow } from "../../infrastructure/database/clock";
-import { OutboxRepository } from "../../infrastructure/database/outbox.repository";
 import { describeError } from "../shared/describe-error";
-import { metrics } from "../../infrastructure/observability/metrics";
 import { DEFAULT_FAILURE_BACKOFF, FailureBackoff, type FailureBackoffOptions } from "../shared/failure-backoff";
+import type { WageringPorts } from "../ports";
 import type { EventPublisher } from "./event-publisher";
 
 export interface OutboxRelayOptions {
@@ -36,8 +34,8 @@ export class OutboxRelay {
   constructor(
     private readonly orm: MikroORM,
     private readonly publisher: EventPublisher,
+    private readonly ports: Pick<WageringPorts, "outbox" | "clock" | "metrics">,
     private readonly options: OutboxRelayOptions = { batchSize: 50, idleDelayMs: 500 },
-    private readonly outbox = new OutboxRepository(),
   ) {}
 
   /** Uma rodada: trava um lote, publica um por um e grava o resultado de cada. */
@@ -45,9 +43,9 @@ export class OutboxRelay {
     // métricas só valem se a transação confirmar: ficam aqui até o commit
     const afterCommit: Array<() => void> = [];
     const batch = await this.orm.em.fork().transactional(async (em) => {
-      const messages = await this.outbox.claimDue(em, this.options.batchSize);
+      const messages = await this.ports.outbox.claimDue(em, this.options.batchSize);
       // backoff calculado no relógio do banco, o mesmo que o claimDue compara
-      const now = await databaseNow(em);
+      const now = await this.ports.clock.now(em);
       const result = { published: 0, failed: 0 };
       // wallet com mensagem ainda em backoff para ali: as seguintes esperam por ela
       const waiting = new Set<string>();
@@ -60,16 +58,16 @@ export class OutboxRelay {
         try {
           await this.publisher.publish(message);
           message.markPublished(now);
-          await this.outbox.save(em, message);
+          await this.ports.outbox.save(em, message);
           // occurred_at e now vêm do relógio do banco: o atraso é confiável
           const delaySeconds = Math.max(0, (now.getTime() - message.occurredAt.getTime()) / 1000);
-          afterCommit.push(() => metrics.outboxPublishDelay.observe(delaySeconds));
+          afterCommit.push(() => this.ports.metrics.outboxPublished(delaySeconds));
           result.published++;
         } catch (error) {
           // conta a partir da falha: a publicação pode ter levado o timeout inteiro
-          message.scheduleRetry(await databaseNow(em));
-          await this.outbox.save(em, message, (error as Error).message);
-          afterCommit.push(() => metrics.retries.inc({ component: "outbox_publish" }));
+          message.scheduleRetry(await this.ports.clock.now(em));
+          await this.ports.outbox.save(em, message, (error as Error).message);
+          afterCommit.push(() => this.ports.metrics.retryScheduled("outbox_publish"));
           result.failed++;
           this.logger.warn({
             msg: "outbox publish failed",

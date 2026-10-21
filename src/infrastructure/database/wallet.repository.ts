@@ -1,5 +1,6 @@
 import { LockMode } from "@mikro-orm/core";
 import type { EntityManager } from "@mikro-orm/postgresql";
+import type { WalletRepositoryPort } from "../../application/ports";
 import { Money } from "../../domain/shared/money";
 import { metrics } from "../observability/metrics";
 import { Wallet } from "../../domain/wallet/wallet";
@@ -21,7 +22,7 @@ export class StaleWalletVersionError extends Error {
 /** Quanto uma transação espera pelo lock de uma wallet antes de desistir. */
 const DEFAULT_LOCK_TIMEOUT_MS = Number(process.env.WALLET_LOCK_TIMEOUT_MS ?? 5_000);
 
-export class WalletRepository {
+export class WalletRepository implements WalletRepositoryPort {
   constructor(private readonly lockTimeoutMs = DEFAULT_LOCK_TIMEOUT_MS) {
     // vai direto num SET (que não aceita parâmetro): só inteiro positivo passa
     if (!Number.isInteger(lockTimeoutMs) || lockTimeoutMs <= 0) {

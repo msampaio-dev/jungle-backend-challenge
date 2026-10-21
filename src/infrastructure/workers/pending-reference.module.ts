@@ -1,4 +1,5 @@
 import { Inject, Module, type OnApplicationBootstrap, type OnApplicationShutdown } from "@nestjs/common";
+import { wageringPorts } from "../wiring";
 import { MikroORM } from "@mikro-orm/postgresql";
 import { PendingReferenceWorker } from "../../application/wagering/pending-reference-worker";
 import { ProcessWagerTransactionUseCase } from "../../application/wagering/process-wager-transaction.use-case";
@@ -9,7 +10,7 @@ import { isEnabled } from "../config";
     {
       provide: PendingReferenceWorker,
       useFactory: (orm: MikroORM, useCase: ProcessWagerTransactionUseCase) =>
-        isEnabled("PENDING_REFERENCE_WORKER_ENABLED") ? new PendingReferenceWorker(orm, useCase) : null,
+        isEnabled("PENDING_REFERENCE_WORKER_ENABLED") ? new PendingReferenceWorker(orm, useCase, wageringPorts()) : null,
       inject: [MikroORM, ProcessWagerTransactionUseCase],
     },
   ],

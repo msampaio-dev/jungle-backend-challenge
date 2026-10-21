@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
@@ -32,8 +33,8 @@ const sql = (query: string, params: unknown[] = []) => orm.em.getConnection().ex
 const fast: ReferenceRetryPolicy = { maxAttempts: 3, baseDelayMs: 1, maxDelayMs: 1 };
 
 function setup(policy?: ReferenceRetryPolicy) {
-  const useCase = new ProcessWagerTransactionUseCase(orm, undefined, undefined, undefined, policy);
-  const worker = (leaseMs = 30_000) => new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 0, leaseMs, maxResolutionFailures: 5 });
+  const useCase = new ProcessWagerTransactionUseCase(orm, wageringPorts(), policy);
+  const worker = (leaseMs = 30_000) => new PendingReferenceWorker(orm, useCase, wageringPorts(), { batchSize: 50, idleDelayMs: 0, leaseMs, maxResolutionFailures: 5 });
   return { run: (cmd: Parameters<typeof useCase.execute>[0]) => useCase.execute(cmd), worker };
 }
 
@@ -184,7 +185,7 @@ describe("worker de PENDING_REFERENCE", () => {
         throw new Error("bug no resolve");
       }
     }
-    const worker = new PendingReferenceWorker(orm, new BuggyUseCase(orm), {
+    const worker = new PendingReferenceWorker(orm, new BuggyUseCase(orm, wageringPorts()), wageringPorts(), {
       batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 3,
     });
 
@@ -217,7 +218,7 @@ describe("worker de PENDING_REFERENCE", () => {
         throw new ConnectionException(new Error("db down"));
       }
     }
-    const worker = new PendingReferenceWorker(orm, new DbDownUseCase(orm), {
+    const worker = new PendingReferenceWorker(orm, new DbDownUseCase(orm, wageringPorts()), wageringPorts(), {
       batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 3,
     });
 

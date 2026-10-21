@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import { ReceiveMessageCommand, type SQSClient } from "@aws-sdk/client-sqs";
 import { ConnectionException } from "@mikro-orm/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
@@ -58,7 +59,7 @@ describe("relay da outbox", () => {
         throw down();
       }
     }
-    const relay = new OutboxRelay(orm, { publish: async () => {} }, { batchSize: 50, idleDelayMs: 0, failureBackoff: fast }, new DownOutbox());
+    const relay = new OutboxRelay(orm, { publish: async () => {} }, wageringPorts({ outbox: new DownOutbox() }), { batchSize: 50, idleDelayMs: 0, failureBackoff: fast });
     relay.start();
     await Bun.sleep(WINDOW_MS);
     await relay.stop();
@@ -77,7 +78,7 @@ describe("relay da outbox", () => {
         return super.claimDue(...args);
       }
     }
-    const relay = new OutboxRelay(orm, { publish: async () => {} }, { batchSize: 50, idleDelayMs: 10, failureBackoff: fast }, new FlakyOutbox());
+    const relay = new OutboxRelay(orm, { publish: async () => {} }, wageringPorts({ outbox: new FlakyOutbox() }), { batchSize: 50, idleDelayMs: 10, failureBackoff: fast });
     relay.start();
     await Bun.sleep(WINDOW_MS);
     await relay.stop();
@@ -100,10 +101,9 @@ describe("worker de pendentes", () => {
     }
     const worker = new PendingReferenceWorker(
       orm,
-      new ProcessWagerTransactionUseCase(orm),
+      new ProcessWagerTransactionUseCase(orm, wageringPorts()),
+      wageringPorts({ transactions: new DownTransactions() }),
       { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5, failureBackoff: fast },
-      undefined,
-      new DownTransactions(),
     );
     worker.start();
     await Bun.sleep(WINDOW_MS);
@@ -129,7 +129,7 @@ describe("consumidor SQS", () => {
         return main.client.send(cmd as never, opts as never);
       },
     } as unknown as SQSClient;
-    const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm), {
+    const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm, wageringPorts()), {
       queueUrl: main.queueUrl,
       dlqUrl: dlq.queueUrl,
       consumerName: "backoff",
@@ -162,7 +162,7 @@ describe("consumidor SQS", () => {
         return Promise.reject(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }));
       },
     } as unknown as SQSClient;
-    const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm), {
+    const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm, wageringPorts()), {
       queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "backoff5", waitTimeSeconds: 1,
       maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0, pollFailureBackoff: fast, concurrency: 5,
     });
@@ -189,7 +189,7 @@ test("SIGTERM durante uma espera longa: o consumidor para na hora, não depois d
         ? Promise.reject(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))
         : main.client.send(cmd as never, opts as never),
   } as unknown as SQSClient;
-  const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm), {
+  const consumer = new SqsWagerConsumer(downClient, orm, new ProcessWagerTransactionUseCase(orm, wageringPorts()), {
     queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "stop", waitTimeSeconds: 1,
     maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0,
     pollFailureBackoff: { baseMs: 10_000, maxMs: 10_000 },
@@ -208,9 +208,9 @@ test("ao parar, cada componente registra que parou e quanto tempo levou", async 
   captureLogs();
   const dlq = await createTestQueue("stoplog-dlq");
   const main = await createTestQueue("stoplog-main");
-  const useCase = new ProcessWagerTransactionUseCase(orm);
-  const relay = new OutboxRelay(orm, { publish: async () => {} }, { batchSize: 50, idleDelayMs: 100 });
-  const worker = new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 100, leaseMs: 30_000, maxResolutionFailures: 5 });
+  const useCase = new ProcessWagerTransactionUseCase(orm, wageringPorts());
+  const relay = new OutboxRelay(orm, { publish: async () => {} }, wageringPorts(), { batchSize: 50, idleDelayMs: 100 });
+  const worker = new PendingReferenceWorker(orm, useCase, wageringPorts(), { batchSize: 50, idleDelayMs: 100, leaseMs: 30_000, maxResolutionFailures: 5 });
   const consumer = new SqsWagerConsumer(main.client, orm, useCase, {
     queueUrl: main.queueUrl, dlqUrl: dlq.queueUrl, consumerName: "stoplog", waitTimeSeconds: 1,
     maxAttempts: 5, backoffBaseSeconds: 0, backoffMaxSeconds: 0, concurrency: 2,

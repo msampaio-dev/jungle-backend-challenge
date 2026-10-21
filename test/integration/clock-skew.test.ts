@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, setSystemTime, test } from "bun:test";
+import { wageringPorts } from "../../src/infrastructure/wiring";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { EventPublisher } from "../../src/application/outbox/event-publisher";
 import { OutboxRelay } from "../../src/application/outbox/outbox-relay";
@@ -38,8 +39,8 @@ afterAll(async () => {
 const sql = (q: string, p: unknown[] = []) => orm.em.getConnection().execute(q, p);
 
 test("app adiantada 1h: a pendente continua sendo checada ~2s depois, não 1h depois", async () => {
-  const useCase = new ProcessWagerTransactionUseCase(orm);
-  const worker = new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
+  const useCase = new ProcessWagerTransactionUseCase(orm, wageringPorts());
+  const worker = new PendingReferenceWorker(orm, useCase, wageringPorts(), { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
   const w = await createWallet(orm, "100.00");
 
   setSystemTime(new Date(Date.now() + HOUR));
@@ -57,17 +58,17 @@ test("app adiantada 1h: a pendente continua sendo checada ~2s depois, não 1h de
 
 test("app atrasada 1h: o backoff da outbox continua valendo", async () => {
   const w = await createWallet(orm, "0.00");
-  await new ProcessWagerTransactionUseCase(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+  await new ProcessWagerTransactionUseCase(orm, wageringPorts()).execute(command(w, { kind: "LOSS", amount: "0.00" }));
   await sql("update outbox_messages set published_at = now() where aggregate_id <> ? and published_at is null", [w.walletId]);
 
   setSystemTime(new Date(Date.now() - HOUR));
   const down: EventPublisher = { publish: async () => Promise.reject(new Error("sqs down")) };
-  expect((await new OutboxRelay(orm, down).publishBatch()).failed).toBe(1);
+  expect((await new OutboxRelay(orm, down, wageringPorts()).publishBatch()).failed).toBe(1);
 
   // logo em seguida o evento ainda está no backoff de 1s: ninguém deve tentar de novo
   let calls = 0;
   const counting: EventPublisher = { publish: async () => void calls++ };
-  await new OutboxRelay(orm, counting).publishBatch();
+  await new OutboxRelay(orm, counting, wageringPorts()).publishBatch();
   expect(calls).toBe(0);
 
   const [row] = await sql("select extract(epoch from next_attempt_at - now()) as wait from outbox_messages where aggregate_id = ?", [w.walletId]);
@@ -77,7 +78,7 @@ test("app atrasada 1h: o backoff da outbox continua valendo", async () => {
 
 test("publicação lenta que falha: o backoff conta a partir da falha, não do início da transação", async () => {
   const w = await createWallet(orm, "0.00");
-  await new ProcessWagerTransactionUseCase(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+  await new ProcessWagerTransactionUseCase(orm, wageringPorts()).execute(command(w, { kind: "LOSS", amount: "0.00" }));
   await sql("update outbox_messages set published_at = now() where aggregate_id <> ? and published_at is null", [w.walletId]);
 
   const slowAndDown: EventPublisher = {
@@ -86,7 +87,7 @@ test("publicação lenta que falha: o backoff conta a partir da falha, não do i
       throw new Error("sqs timeout");
     },
   };
-  expect((await new OutboxRelay(orm, slowAndDown).publishBatch()).failed).toBe(1);
+  expect((await new OutboxRelay(orm, slowAndDown, wageringPorts()).publishBatch()).failed).toBe(1);
 
   const [row] = await sql("select extract(epoch from next_attempt_at - now()) as wait from outbox_messages where aggregate_id = ?", [w.walletId]);
   expect(Number(row!.wait)).toBeGreaterThan(0); // ainda no backoff, não vencido
@@ -99,15 +100,15 @@ test("app adiantada 1h: eventos de abertura de wallet saem na hora, não 1h depo
 
   let published = 0;
   const counting: EventPublisher = { publish: async () => void published++ };
-  await new OutboxRelay(orm, counting).publishBatch();
+  await new OutboxRelay(orm, counting, wageringPorts()).publishBatch();
   expect(published).toBe(2); // WagerTransactionProcessed + WalletBalanceChanged da abertura
   const [row] = await sql("select count(*)::int as n from outbox_messages where aggregate_id = ? and published_at is null", [w.walletId]);
   expect(row!.n).toBe(0);
 });
 
 test("app adiantada 1h: toda data gravada vem do relógio do banco", async () => {
-  const useCase = new ProcessWagerTransactionUseCase(orm);
-  const worker = new PendingReferenceWorker(orm, useCase, { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
+  const useCase = new ProcessWagerTransactionUseCase(orm, wageringPorts());
+  const worker = new PendingReferenceWorker(orm, useCase, wageringPorts(), { batchSize: 50, idleDelayMs: 0, leaseMs: 30_000, maxResolutionFailures: 5 });
   const dlq = await createTestQueue("skew-dlq");
   const main = await createTestQueue("skew-main");
   const consumer = new SqsWagerConsumer(main.client, orm, useCase, {
@@ -125,7 +126,7 @@ test("app adiantada 1h: toda data gravada vem do relógio do banco", async () =>
   const { idempotencyKey, ...data } = command(w, { amount: "5.00" });
   await main.send({ messageId: "msg-skew", type: "WagerTransactionRequested", data: { ...data, idempotencyKey } }, w.walletId);
   await consumer.pollOnce(); // aposta pelo SQS, com inbox
-  await new OutboxRelay(orm, { publish: async () => {} }).publishBatch(); // published_at
+  await new OutboxRelay(orm, { publish: async () => {} }, wageringPorts()).publishBatch(); // published_at
 
   const [resolved] = await sql("select status from wager_transactions where id = ?", [refund.transactionId]);
   expect(resolved!.status).toBe("PROCESSED");
