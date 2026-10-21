@@ -3,6 +3,7 @@ import { MikroORM } from "@mikro-orm/postgresql";
 import { classifyError, ErrorKind, errorCode } from "../../src/application/error-kind";
 import { PendingReferenceWorker } from "../../src/application/wagering/pending-reference-worker";
 import { ProcessWagerTransactionUseCase } from "../../src/application/wagering/process-wager-transaction.use-case";
+import { WagerTransactionStatus } from "../../src/domain/wagering/wager-transaction";
 import { createOrmConfig } from "../../src/infrastructure/database/mikro-orm.config";
 import { createTestOrm } from "./support/database";
 import { command, createWallet, processor } from "./support/fixtures";
@@ -34,7 +35,7 @@ async function connectionLostError(): Promise<unknown> {
     return await victim.em
       .fork()
       .transactional(async (em) => {
-        const [{ pid }] = await em.execute("select pg_backend_pid() as pid");
+        const [{ pid }] = (await em.execute("select pg_backend_pid() as pid")) as [{ pid: number }];
         await orm.em.getConnection().execute("select pg_terminate_backend(?)", [pid]);
         await Bun.sleep(200);
         await em.execute("select 1");
@@ -80,7 +81,7 @@ describe("classificação", () => {
 test("worker: queda de conexão não conta como falha da pendente (não leva a FAILED)", async () => {
   const w = await createWallet(orm, "100.00");
   const pending = await processor(orm).execute(command(w, { kind: "REFUND", amount: "5.00", referenceExternalTransactionId: "nao-chegou" }));
-  expect(pending.status).toBe("PENDING_REFERENCE");
+  expect(pending.status).toBe(WagerTransactionStatus.PendingReference);
 
   const lost = await connectionLostError();
   class FailoverUseCase extends ProcessWagerTransactionUseCase {
