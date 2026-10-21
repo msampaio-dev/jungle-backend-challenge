@@ -135,7 +135,7 @@ A API e a fila compartilham o mesmo espaço de idempotência: a mesma operação
 | Operação | Saldo | Referência |
 |---|---|---|
 | BET | débito; rejeita sem saldo (`INSUFFICIENT_FUNDS`) | não usa |
-| WIN | crédito | opcional; se vier, precisa ser uma BET; o valor pode ser diferente |
+| WIN | crédito | opcional; se vier, precisa ser uma BET que não foi revertida; o valor pode ser diferente |
 | LOSS | nenhum; valor pode ser 0 | não usa |
 | REFUND | crédito | obrigatória; só BET; valor igual ao da BET |
 | ROLLBACK | inverso da referência | obrigatória; BET, WIN ou REFUND; valor igual |
@@ -148,6 +148,7 @@ Algumas interpretações:
 - Reversão que deixaria o saldo negativo (ROLLBACK de um WIN já gasto) é rejeitada com `REVERSAL_INSUFFICIENT_FUNDS`, diferente do `INSUFFICIENT_FUNDS` de uma aposta.
 - Transação para uma wallet que existe, mas de outro jogador, é gravada como REJECTED com `PLAYER_WALLET_MISMATCH`, para ficar auditável. Para uma wallet que não existe não há o que gravar (a FK exige a wallet), e a resposta é 404.
 - Moeda diferente da wallet é gravada como REJECTED com `CURRENCY_MISMATCH`.
+- Um WIN que referencia uma BET já devolvida (por REFUND ou ROLLBACK) é rejeitado com `REFERENCE_ALREADY_REVERSED`: não existe prêmio de uma aposta que foi desfeita. Vários WINs da mesma BET continuam valendo, porque uma rodada pode ter mais de um prêmio (giros grátis, por exemplo).
 
 ## Códigos de falha
 
@@ -163,7 +164,7 @@ Algumas interpretações:
 | `REFERENCE_MISMATCH` | referência de outro jogador, wallet, rodada ou moeda | corrige o payload |
 | `REFERENCE_INVALID_KIND` | tipo de referência não permitido (REFUND de um WIN, por exemplo) | corrige o payload |
 | `REFERENCE_AMOUNT_MISMATCH` | valor do REFUND ou ROLLBACK diferente do da referência | corrige o payload |
-| `REFERENCE_ALREADY_REVERSED` | a referência já foi revertida | nada a fazer |
+| `REFERENCE_ALREADY_REVERSED` | a referência já foi revertida (inclui WIN de uma BET devolvida) | nada a fazer |
 | `PROCESSING_FAILED` | `FAILED`: o worker desistiu depois de erros não transitórios | abre chamado; o erro está em `last_error` |
 
 Os erros de requisição (sem transação gravada) têm os próprios códigos no corpo: `INVALID_REQUEST`, `INVALID_MONEY`, `INVALID_TRANSACTION`, `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `WALLET_ALREADY_EXISTS` (com o `walletId` existente), `IDEMPOTENCY_CONFLICT`, `SERVICE_UNAVAILABLE` e `INTERNAL_ERROR`.
@@ -295,7 +296,7 @@ Sobre filas e ordem:
 
 Sobre regras de negócio:
 
-- Um ROLLBACK de uma BET é aceito mesmo que já exista um WIN daquela rodada. O desafio não define o que fazer nesse caso; num sistema real eu confirmaria a regra com o time de produto.
+- O caso inverso do WIN sobre aposta devolvida continua aceito: um REFUND ou ROLLBACK de uma BET que já teve WIN devolve a aposta e o prêmio fica. O desafio não define o que fazer nesse caso; num sistema real eu confirmaria a regra com o time de produto (provavelmente exigindo o ROLLBACK do WIN antes).
 - A entrada de `Money` aceita valores com 0 ou 1 casa decimal, normalizados para 2 (ver a seção Money).
 - O ledger é de entrada simples por wallet. Partidas dobradas eram diferencial opcional e ficaram de fora.
 

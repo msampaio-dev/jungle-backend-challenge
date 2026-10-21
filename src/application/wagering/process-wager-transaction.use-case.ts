@@ -289,9 +289,10 @@ export class ProcessWagerTransactionUseCase {
         tx.reject(problem, wallet.balance);
         return undefined;
       }
-      // uma reversão por referência, qualquer que seja o tipo: REFUND e depois
-      // ROLLBACK da mesma BET devolveriam o valor duas vezes
-      if (tx.requiresReference() && (await this.transactions.hasProcessedReversal(em, reference.id))) {
+      // Referência já desfeita não serve para mais nada: uma reversão por
+      // referência, qualquer que seja o tipo (REFUND e depois ROLLBACK da mesma
+      // BET devolveriam o valor duas vezes), e nada de WIN sobre aposta devolvida.
+      if (await this.transactions.hasProcessedReversal(em, reference.id)) {
         tx.reject(FailureCode.ReferenceAlreadyReversed, wallet.balance);
         return undefined;
       }

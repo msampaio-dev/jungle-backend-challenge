@@ -4,6 +4,7 @@ import type { MikroORM } from "@mikro-orm/postgresql";
 import { IdempotencyConflictError, WalletAlreadyExistsError, WalletNotFoundError } from "../../src/application/errors";
 import { CreateWalletUseCase } from "../../src/application/wallet/create-wallet.use-case";
 import { InvalidMoneyError, InvalidWagerTransactionError } from "../../src/domain/shared/domain-error";
+import { WagerTransactionStatus } from "../../src/domain/wagering/wager-transaction";
 import { createTestOrm } from "./support/database";
 import { expectLedgerInvariant } from "./support/invariant";
 import { command, createWallet, processor, snapshot, type TestWallet } from "./support/fixtures";
@@ -209,6 +210,31 @@ describe("regras de negócio", () => {
     expect(first).toMatchObject({ status: "PROCESSED", balance: { amount: "100.00" } });
     expect(second).toMatchObject({ status: "REJECTED", failureCode: "REFERENCE_ALREADY_REVERSED" });
     expect((await snapshot(orm, w.walletId)).balance).toBe("100.00");
+  });
+
+  test.each(["REFUND", "ROLLBACK"])("WIN de uma BET já desfeita por %s é rejeitado: não há prêmio de aposta devolvida", async (reversal) => {
+    const w = await wallet();
+    const bet = command(w, { amount: "10.00" });
+    await run(bet);
+    await run(command(w, { kind: reversal, amount: "10.00", referenceExternalTransactionId: bet.externalTransactionId }));
+
+    const win = await run(command(w, { kind: "WIN", amount: "50.00", referenceExternalTransactionId: bet.externalTransactionId }));
+
+    expect(win).toMatchObject({ status: "REJECTED", failureCode: "REFERENCE_ALREADY_REVERSED", balance: { amount: "100.00" } });
+    expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "100.00", credits: 2 }); // abertura e a devolução
+  });
+
+  test("vários WINs da mesma BET continuam valendo (rodada com mais de um prêmio)", async () => {
+    const w = await wallet();
+    const bet = command(w, { amount: "10.00" });
+    await run(bet);
+    const ref = { kind: "WIN", amount: "30.00", referenceExternalTransactionId: bet.externalTransactionId };
+
+    const first = await run(command(w, ref));
+    const second = await run(command(w, ref));
+
+    expect([first.status, second.status]).toEqual([WagerTransactionStatus.Processed, WagerTransactionStatus.Processed]);
+    expect(second.balance).toEqual({ amount: "150.00", currency: "BRL" });
   });
 
   test("REFUND com valor diferente da BET é rejeitado", async () => {
