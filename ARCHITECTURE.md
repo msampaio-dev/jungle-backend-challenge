@@ -245,7 +245,7 @@ Todas as datas gravadas vêm do relógio do banco (`clock_timestamp()`): criaç�
 
 ## Observabilidade
 
-Logs em JSON, uma linha por evento, todos com o contexto da operação: `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId`. O contexto vem de um `AsyncLocalStorage` aberto pelo middleware HTTP, pelo consumidor e pelo worker. O `X-Correlation-Id` do provedor é aceito se for curto e seguro (`[A-Za-z0-9._:-]{1,128}`); senão a requisição ganha um id novo, e ela segue de qualquer jeito. O id volta no header da resposta e é gravado na transação.
+Logs em JSON, uma linha por evento, todos com o contexto da operação: `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId`. O contexto vem de um `AsyncLocalStorage` aberto pelo middleware HTTP, pelo consumidor e pelo worker. O `X-Correlation-Id` do provedor é aceito se for curto e seguro (`[A-Za-z0-9._:-]{1,128}`); senão a requisição ganha um id novo, e ela segue de qualquer jeito. Na fila vale a mesma regra para o `correlationId` do envelope: inválido, o rastreio usa o `messageId` e a aposta é processada. O id volta no header da resposta e é gravado na transação.
 
 O logger descarta chaves com payload ou valor financeiro (`payload`, `body`, `data`, `money`, `amount`, `balance`, `difference` e parecidas). Erros do driver do banco saem só com o tipo e o código SQL, porque a mensagem deles traz o SQL com os valores. Os logs do MikroORM e do knex passam pelo mesmo logger, inclusive no container `migrate`.
 

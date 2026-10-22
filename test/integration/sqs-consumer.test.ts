@@ -109,6 +109,22 @@ describe("consumidor SQS", () => {
     }
   });
 
+  test.each([
+    ["longo demais", "c".repeat(300)],
+    ["com caracteres que não vão para log", "abc def\nlinha"],
+  ])("correlationId %s não derruba a aposta: vira o messageId, como na API", async (_name, correlationId) => {
+    const w = await createWallet(orm, "100.00");
+    const msg = { ...envelope(w, { amount: "10.00" }), correlationId };
+    await main.send(msg, w.walletId);
+
+    expect(await consumeAll(consumer())).toEqual(["processed"]);
+    expect((await snapshot(orm, w.walletId)).balance).toBe("90.00");
+    const [tx] = await orm.em
+      .getConnection()
+      .execute("select correlation_id from wager_transactions where external_transaction_id = ?", [msg.data.externalTransactionId]);
+    expect(tx?.correlation_id).toBe(msg.messageId);
+  });
+
   test("atomicidade: falha depois de gravar a inbox desfaz tudo junto (transação, ledger, outbox e inbox)", async () => {
     const w = await createWallet(orm, "100.00");
     const msg = envelope(w, { amount: "25.00" });

@@ -11,6 +11,18 @@ export interface LogContext {
 
 const storage = new AsyncLocalStorage<LogContext>();
 
+/** Só o que é seguro de repetir em logs, headers e no banco. */
+const SAFE_CORRELATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/**
+ * O id de rastreio que o provedor mandou, se for seguro; senão undefined, e
+ * quem chamou usa um id próprio. Rastreio nunca pode impedir uma aposta: a
+ * API (header) e a fila (envelope) seguem a mesma regra.
+ */
+export function safeCorrelationId(received: unknown): string | undefined {
+  return typeof received === "string" && SAFE_CORRELATION_ID.test(received) ? received : undefined;
+}
+
 /**
  * Roda `fn` com um contexto próprio. Tudo que `fn` chamar, inclusive depois
  * de awaits, enxerga esse contexto; requisições paralelas não se misturam.

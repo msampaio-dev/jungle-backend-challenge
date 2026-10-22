@@ -25,7 +25,7 @@ import { InboxMessage } from "../../domain/messaging/inbox-message";
 import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
-import { runWithContext } from "../../application/shared/operation-context";
+import { runWithContext, safeCorrelationId } from "../../application/shared/operation-context";
 import { metrics } from "../observability/metrics";
 import { describeError } from "../../application/shared/describe-error";
 
@@ -370,11 +370,9 @@ function parseEnvelope(body: string | undefined): Envelope {
     throw new InvalidEnvelopeError("data.idempotencyKey is required");
   }
   if (typeof data.money !== "object" || data.money === null) throw new InvalidEnvelopeError("data.money is required");
-  return {
-    messageId: e.messageId,
-    ...(typeof e.correlationId === "string" ? { correlationId: e.correlationId } : {}),
-    data,
-  };
+  // id de rastreio inválido não derruba a aposta: fica sem, e vale o messageId (como na API)
+  const correlationId = safeCorrelationId(e.correlationId);
+  return { messageId: e.messageId, ...(correlationId ? { correlationId } : {}), data };
 }
 
 function toCommand(envelope: Envelope): SubmitWagerCommand {
