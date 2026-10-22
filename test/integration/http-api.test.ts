@@ -235,6 +235,20 @@ describe("POST /wagering/transactions — status", () => {
     expect(res.status).toBe(404);
     expect(res.body.code).toBe("WALLET_NOT_FOUND");
   });
+
+  test("moeda diferente: o saldo observado é o da wallet, na moeda dela, também no replay e no GET", async () => {
+    const w = await newWallet("100.00"); // wallet em BRL
+    const usd = wager(w, { money: { amount: "10.00", currency: "USD" } });
+    const first = await usd.send();
+    const replay = await usd.send();
+    const view = await api.call("GET", `/wagering/transactions/${first.body.transactionId}`);
+
+    const brl = { amount: "100.00", currency: "BRL" };
+    expect(first.body).toMatchObject({ status: "REJECTED", failureCode: "CURRENCY_MISMATCH", balance: brl });
+    expect(replay.body.balance).toEqual(brl);
+    expect(view.body.resultBalance).toEqual(brl);
+    expect(view.body.money).toEqual({ amount: "10.00", currency: "USD" }); // a operação continua em USD
+  });
 });
 
 describe("consultas", () => {

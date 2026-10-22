@@ -14,6 +14,7 @@ import { Migration20261020070000ResolutionFailures } from "./migrations/Migratio
 import { Migration20261020080000CorrelationId } from "./migrations/Migration20261020080000CorrelationId";
 import { Migration20261021000000PendingByReferenceIndex } from "./migrations/Migration20261021000000PendingByReferenceIndex";
 import { Migration20261021010000OutboxByAggregateIndex } from "./migrations/Migration20261021010000OutboxByAggregateIndex";
+import { Migration20261022000000ResultBalanceCurrency } from "./migrations/Migration20261022000000ResultBalanceCurrency";
 
 // Logs do MikroORM e do knex (que escreve direto no console, colorido) passam
 // pelo logger da aplicação, para saírem em JSON como todo o resto.
@@ -67,6 +68,7 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
         { name: "Migration20261020080000CorrelationId", class: Migration20261020080000CorrelationId },
         { name: "Migration20261021000000PendingByReferenceIndex", class: Migration20261021000000PendingByReferenceIndex },
         { name: "Migration20261021010000OutboxByAggregateIndex", class: Migration20261021010000OutboxByAggregateIndex },
+        { name: "Migration20261022000000ResultBalanceCurrency", class: Migration20261022000000ResultBalanceCurrency },
       ],
       transactional: true,
       allOrNothing: true,

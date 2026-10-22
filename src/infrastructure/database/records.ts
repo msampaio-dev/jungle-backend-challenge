@@ -51,6 +51,8 @@ export class WagerTransactionRecord {
   status!: string;
   failureCode?: string | null;
   resultBalance?: string | null;
+  /** moeda do saldo observado: a da wallet, que pode não ser a da transação */
+  resultCurrency?: string | null;
   attempts!: number;
   nextAttemptAt?: Date | null;
   createdAt!: Date;
@@ -80,6 +82,7 @@ export const WagerTransactionRecordSchema = new EntitySchema<WagerTransactionRec
     status: { type: "string" },
     failureCode: { type: "string", nullable: true },
     resultBalance: { type: "decimal", precision: 18, scale: 2, nullable: true },
+    resultCurrency: { type: "string", length: 3, nullable: true },
     attempts: { type: "integer" },
     nextAttemptAt: { type: "Date", nullable: true },
     createdAt: { type: "Date" },

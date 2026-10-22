@@ -72,6 +72,7 @@ export class WagerTransactionRepository implements WagerTransactionRepositoryPor
       referenceTransactionId: tx.referenceTransactionId ?? null,
       failureCode: tx.failureCode ?? null,
       resultBalance: tx.resultBalance?.toJSON().amount ?? null,
+      resultCurrency: tx.resultBalance?.currency ?? null,
       processedAt: tx.processedAt ?? null,
       attempts: tx.referenceAttempts,
       nextAttemptAt: tx.nextReferenceCheckAt ?? null,
@@ -169,7 +170,8 @@ function toWagerTransaction(r: WagerTransactionRecord): WagerTransaction {
     status: r.status as WagerTransactionStatus,
     referenceTransactionId: r.referenceTransactionId ?? undefined,
     failureCode: (r.failureCode as FailureCode | null) ?? undefined,
-    resultBalance: r.resultBalance ? money(r.resultBalance) : undefined,
+    // o saldo observado é o da wallet, na moeda DELA (não na da transação)
+    resultBalance: r.resultBalance ? Money.from({ amount: r.resultBalance, currency: r.resultCurrency! }) : undefined,
     processedAt: r.processedAt ?? undefined,
     referenceAttempts: r.attempts,
     nextReferenceCheckAt: r.nextAttemptAt ?? undefined,

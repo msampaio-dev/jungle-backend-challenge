@@ -191,7 +191,7 @@ export class WalletQueries {
     const [r] = await this.sql(
       `select id, provider_id, external_transaction_id, wallet_id, player_id, round_id, game_id, kind,
               amount::text as amount, currency, status, failure_code, reference_external_transaction_id,
-              reference_transaction_id, result_balance::text as result_balance, created_at, processed_at,
+              reference_transaction_id, result_balance::text as result_balance, result_currency, created_at, processed_at,
               attempts, case when status = 'PENDING_REFERENCE' then next_attempt_at end as next_attempt_at
          from wager_transactions where ${where}`,
       params,
@@ -211,7 +211,7 @@ export class WalletQueries {
       failureCode: (r.failure_code as string | null) ?? null,
       referenceExternalTransactionId: (r.reference_external_transaction_id as string | null) ?? null,
       referenceTransactionId: (r.reference_transaction_id as string | null) ?? null,
-      resultBalance: r.result_balance == null ? null : money(r.result_balance, r.currency),
+      resultBalance: r.result_balance == null ? null : money(r.result_balance, r.result_currency),
       createdAt: new Date(r.created_at as string).toISOString(),
       processedAt: r.processed_at ? new Date(r.processed_at as string).toISOString() : null,
       referenceAttempts: Number(r.attempts),
