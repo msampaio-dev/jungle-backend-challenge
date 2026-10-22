@@ -222,6 +222,14 @@ describe("POST /wagering/transactions — status", () => {
     expect(res.status).toBe(400);
   });
 
+  test("caractere NUL num identificador é 400, não 500", async () => {
+    const w = await newWallet();
+    const bet = wager(w, { providerId: "provider" + String.fromCharCode(0) + "a" });
+    const res = await bet.send();
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "INVALID_TRANSACTION", message: "providerId must not contain control characters" });
+  });
+
   test.each(["/wagering/transactions", "/wallets"])("body grande demais em %s é 413, não 500: reenviar nunca vai caber", async (path) => {
     const w = await newWallet();
     const huge = JSON.stringify({ ...wager(w).body, padding: "x".repeat(200_000) });
@@ -289,6 +297,12 @@ describe("consultas", () => {
     expect((await api.call("GET", `/wallets/${w.walletId}/ledger?cursor=lixo`)).status).toBe(400);
     expect((await api.call("GET", `/wallets/${w.walletId}/ledger?limit=0`)).status).toBe(400);
     expect((await api.call("GET", `/wallets/${w.walletId}/ledger?limit=1000`)).status).toBe(400);
+  });
+
+  test("caractere NUL no id externo da consulta é 400, não 500", async () => {
+    const res = await api.call("GET", "/providers/provider-a/wagering/transactions/ext%00x");
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("INVALID_REQUEST");
   });
 
   test("cursor com posição fora do bigint do Postgres é 400, não 500", async () => {

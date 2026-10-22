@@ -22,6 +22,7 @@ import type {
 } from "../../application/wagering/process-wager-transaction.use-case";
 import { payloadHash } from "../../application/wagering/payload-hash";
 import { InboxMessage } from "../../domain/messaging/inbox-message";
+import { hasControlCharacter } from "../../domain/shared/text";
 import { MAX_IDENTIFIER_LENGTH } from "../../domain/wagering/wager-transaction";
 import { databaseNow } from "../database/clock";
 import { InboxRepository } from "../database/inbox.repository";
@@ -383,6 +384,8 @@ function parseEnvelope(body: string | undefined): Envelope {
   if (e.messageId.length > MAX_IDENTIFIER_LENGTH) {
     throw new InvalidEnvelopeError(`messageId must have at most ${MAX_IDENTIFIER_LENGTH} characters`);
   }
+  // vai para a inbox: um NUL seria recusado pelo banco e a mensagem ficaria em retry
+  if (hasControlCharacter(e.messageId)) throw new InvalidEnvelopeError("messageId must not contain control characters");
   if (typeof e.data !== "object" || e.data === null) throw new InvalidEnvelopeError("data is required");
   const data = e.data as Record<string, unknown>;
   if (typeof data.idempotencyKey !== "string" || data.idempotencyKey.trim() === "") {

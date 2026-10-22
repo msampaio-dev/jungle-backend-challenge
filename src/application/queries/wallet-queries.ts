@@ -1,6 +1,7 @@
 import { Logger } from "@nestjs/common";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { MoneyProps } from "../../domain/shared/money";
+import { hasControlCharacter } from "../../domain/shared/text";
 import { InvalidRequestError, TransactionNotFoundError, WalletNotFoundError } from "../errors";
 
 /*
@@ -129,6 +130,10 @@ export class WalletQueries {
   }
 
   async getTransactionByExternalId(providerId: string, externalTransactionId: string): Promise<TransactionView> {
+    // vêm da URL: um NUL (%00) chegaria ao banco e viraria 500
+    if (hasControlCharacter(providerId) || hasControlCharacter(externalTransactionId)) {
+      throw new InvalidRequestError("identifiers must not contain control characters");
+    }
     return this.findTransaction("provider_id = ? and external_transaction_id = ?", [providerId, externalTransactionId]);
   }
 

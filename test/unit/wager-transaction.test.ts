@@ -59,6 +59,20 @@ describe("WagerTransaction.create", () => {
     expect(() => tx({ kind })).toThrow(/requires referenceExternalTransactionId/);
   });
 
+  // NUL e outros caracteres de controle: o Postgres recusa NUL em texto, e eles não têm lugar num id
+  const NUL = String.fromCharCode(0);
+  const LF = String.fromCharCode(10);
+  test.each([
+    ["providerId", { providerId: "p" + NUL + "x" }],
+    ["externalTransactionId", { externalTransactionId: "e" + NUL }],
+    ["idempotencyKey", { idempotencyKey: "k" + LF + "k" }],
+    ["roundId", { roundId: "r" + NUL }],
+    ["gameId", { gameId: NUL + "g" }],
+    ["referenceExternalTransactionId", { kind: Kind.Refund, referenceExternalTransactionId: "ref" + NUL }],
+  ] as const)("%s com caractere de controle é payload inválido", (field, overrides) => {
+    expect(() => tx(overrides as Partial<CreateWagerTransactionProps>)).toThrow(new RegExp(`${field} must not contain control characters`));
+  });
+
   test.each([Kind.Win, Kind.Refund, Kind.Rollback])("%s não pode referenciar a si mesmo: é payload inválido, não pendência", (kind) => {
     expect(() => tx({ kind, externalTransactionId: "same-1", referenceExternalTransactionId: "same-1" })).toThrow(
       /cannot reference itself/,

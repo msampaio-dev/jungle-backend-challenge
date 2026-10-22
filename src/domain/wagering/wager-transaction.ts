@@ -1,5 +1,6 @@
 import { Money } from "../shared/money";
 import { InvalidTransactionStateError, InvalidWagerTransactionError } from "../shared/domain-error";
+import { hasControlCharacter } from "../shared/text";
 import { LedgerDirection } from "../wallet/wallet-ledger-entry";
 import { FailureCode } from "./failure-code";
 
@@ -174,6 +175,9 @@ export class WagerTransaction {
       const value = props[field];
       if (typeof value === "string" && value.length > MAX_IDENTIFIER_LENGTH) {
         throw new InvalidWagerTransactionError(`${field} must have at most ${MAX_IDENTIFIER_LENGTH} characters`);
+      }
+      if (typeof value === "string" && hasControlCharacter(value)) {
+        throw new InvalidWagerTransactionError(`${field} must not contain control characters`);
       }
     }
     if ((kind === WagerTransactionKind.Refund || kind === WagerTransactionKind.Rollback) && !reference) {

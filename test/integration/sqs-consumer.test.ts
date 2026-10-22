@@ -197,6 +197,8 @@ describe("consumidor SQS", () => {
     ["JSON inválido", () => "{ não é json", "INVALID_ENVELOPE"],
     ["tipo desconhecido", () => ({ messageId: "m", type: "Other", data: {} }), "INVALID_ENVELOPE"],
     ["messageId gigante", (w: TestWallet) => envelope(w, {}, "m".repeat(256)), "INVALID_ENVELOPE"],
+    ["messageId com caractere de controle", (w: TestWallet) => envelope(w, {}, "m" + String.fromCharCode(0) + "1"), "INVALID_ENVELOPE"],
+    ["id com caractere de controle", (w: TestWallet) => envelope(w, { roundId: "r" + String.fromCharCode(0) }), "INVALID_TRANSACTION"],
     ["dinheiro inválido", (w: TestWallet) => envelope(w, { money: { amount: "1e3", currency: "BRL" } }), "INVALID_MONEY"],
     // o motivo da DLQ repete o valor recebido; o SQS recusa caractere de controle em atributo
     ["dinheiro com caractere de controle", (w: TestWallet) => envelope(w, { money: { amount: "1\u0000", currency: "BRL" } }), "INVALID_MONEY"],
