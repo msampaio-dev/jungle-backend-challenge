@@ -291,6 +291,16 @@ describe("consultas", () => {
     expect((await api.call("GET", `/wallets/${w.walletId}/ledger?limit=1000`)).status).toBe(400);
   });
 
+  test("cursor com posição fora do bigint do Postgres é 400, não 500", async () => {
+    const w = await newWallet();
+    const cursorAt = (seq: string) => Buffer.from(JSON.stringify({ seq }), "utf8").toString("base64url");
+    // o maior bigint ainda é válido (só não há nada depois dele); um a mais não cabe
+    expect((await api.call("GET", `/wallets/${w.walletId}/ledger?cursor=${cursorAt("9223372036854775807")}`)).status).toBe(200);
+    const tooBig = await api.call("GET", `/wallets/${w.walletId}/ledger?cursor=${cursorAt("9223372036854775808")}`);
+    expect(tooBig.status).toBe(400);
+    expect(tooBig.body).toMatchObject({ code: "INVALID_REQUEST", message: "invalid cursor" });
+  });
+
   test("reconciliação consistente", async () => {
     const w = await newWallet();
     await wager(w).send();

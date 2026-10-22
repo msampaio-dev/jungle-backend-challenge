@@ -245,10 +245,14 @@ function encodeCursor(seq: string): string {
   return Buffer.from(JSON.stringify({ seq }), "utf8").toString("base64url");
 }
 
+/** Maior valor de um bigint no Postgres: o seq do ledger nunca passa disso. */
+const MAX_BIGINT = 9223372036854775807n;
+
 function decodeCursor(cursor: string): string {
   try {
     const { seq } = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as { seq?: unknown };
-    if (typeof seq === "string" && /^\d+$/.test(seq)) return seq;
+    // só dígitos E dentro da faixa do bigint: fora dela o Postgres recusaria a comparação (500)
+    if (typeof seq === "string" && /^\d+$/.test(seq) && BigInt(seq) <= MAX_BIGINT) return seq;
   } catch {
     // cai no erro abaixo
   }
