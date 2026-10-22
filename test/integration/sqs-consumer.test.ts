@@ -198,6 +198,8 @@ describe("consumidor SQS", () => {
     ["tipo desconhecido", () => ({ messageId: "m", type: "Other", data: {} }), "INVALID_ENVELOPE"],
     ["messageId gigante", (w: TestWallet) => envelope(w, {}, "m".repeat(256)), "INVALID_ENVELOPE"],
     ["dinheiro inválido", (w: TestWallet) => envelope(w, { money: { amount: "1e3", currency: "BRL" } }), "INVALID_MONEY"],
+    // o motivo da DLQ repete o valor recebido; o SQS recusa caractere de controle em atributo
+    ["dinheiro com caractere de controle", (w: TestWallet) => envelope(w, { money: { amount: "1\u0000", currency: "BRL" } }), "INVALID_MONEY"],
     ["wallet inexistente", (w: TestWallet) => envelope({ ...w, walletId: Bun.randomUUIDv7() }), "WALLET_NOT_FOUND"],
   ])("erro permanente (%s) vai direto para a DLQ com o motivo", async (_name, build, code) => {
     const w = await createWallet(orm, "100.00");

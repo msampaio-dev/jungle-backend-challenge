@@ -325,7 +325,7 @@ export class SqsWagerConsumer {
         MessageDeduplicationId: message.MessageId,
         MessageAttributes: {
           errorCode: { DataType: "String", StringValue: code },
-          errorReason: { DataType: "String", StringValue: reason.slice(0, 1000) || code },
+          errorReason: { DataType: "String", StringValue: sqsSafeText(reason).slice(0, 1000) || code },
         },
       }),
     );
@@ -344,6 +344,16 @@ export class SqsWagerConsumer {
       }),
     );
   }
+}
+
+/**
+ * O SQS só aceita em atributo os caracteres da especificação XML (tab, quebra
+ * de linha e os intervalos Unicode válidos). O motivo pode repetir um valor
+ * vindo do provedor ("invalid amount: ..."); com um caractere de controle, o
+ * envio à DLQ era recusado e a mensagem queimava as tentativas.
+ */
+function sqsSafeText(text: string): string {
+  return text.replace(/[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu, "?");
 }
 
 function receiveCountOf(message: Message): number {
