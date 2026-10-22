@@ -315,5 +315,5 @@ Sobre segurança:
 Sobre os testes:
 
 - O `kill -9` do teste de restart cai em momentos aleatórios da carga; ele não mira exatamente o instante entre o commit e a resposta HTTP. Esse instante é coberto pelo replay idempotente (o cliente reenvia e recebe o resultado original) e, na fila, por um teste em que um processo filho consome a mensagem e se mata com `SIGKILL` no instante do ack, depois do commit.
-- O teste automatizado de `SIGTERM` exercita o caminho de shutdown do consumidor. O sinal de verdade foi conferido no Docker (`docker compose stop`, saída com código 0 e logs de parada), porque a máquina de desenvolvimento é Windows e lá não dá para mandar `SIGTERM` de um processo para outro.
+- O `SIGTERM` real é testado em `sigterm.test.ts`: o teste sobe a app num processo, manda o sinal e confere que o consumidor, o relay e o worker registram a parada e que o processo termina sozinho. No Windows não dá para mandar `SIGTERM` de um processo para outro, então lá o teste é pulado; ele roda na CI, em Linux. O teste não coloca uma mensagem em processamento no momento do sinal; esse caso é coberto pelo teste do `stop()` do consumidor.
 - Não fiz teste de carga (`bun run test:load` era diferencial opcional).
