@@ -222,6 +222,14 @@ describe("POST /wagering/transactions — status", () => {
     expect(res.status).toBe(400);
   });
 
+  test.each(["/wagering/transactions", "/wallets"])("body grande demais em %s é 413, não 500: reenviar nunca vai caber", async (path) => {
+    const w = await newWallet();
+    const huge = JSON.stringify({ ...wager(w).body, padding: "x".repeat(200_000) });
+    const res = await api.call("POST", path, huge, { "Idempotency-Key": `p:huge-${Bun.randomUUIDv7()}` });
+    expect(res.status).toBe(413);
+    expect(res.body).toMatchObject({ code: "PAYLOAD_TOO_LARGE" });
+  });
+
   test("404 com wallet inexistente", async () => {
     const res = await wager({ walletId: Bun.randomUUIDv7(), playerId: Bun.randomUUIDv7() }).send();
     expect(res.status).toBe(404);

@@ -89,6 +89,7 @@ Status HTTP de `POST /wagering/transactions`:
 | 400 | payload inválido | corrige antes de reenviar |
 | 404 | wallet inexistente | não reenvia igual |
 | 409 | `Idempotency-Key` já usada com outro conteúdo, ou `externalTransactionId` já enviado com outra chave | não reenvia igual |
+| 413 | body acima de 100 KB | não reenvia igual |
 | 422 | terminal: rejeitada por regra de negócio (`REJECTED`) ou falha permanente (`FAILED`) | lê o `failureCode`; reenviar devolve o mesmo resultado |
 | 503 | infraestrutura indisponível (banco, lock, pool) | reenvia com a mesma `Idempotency-Key` depois do `Retry-After` |
 

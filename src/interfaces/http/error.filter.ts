@@ -20,11 +20,18 @@ export class ErrorFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
 
-    // erros do próprio Nest/Express (JSON mal formado, rota inexistente...)
+    // erros do próprio Nest (JSON mal formado, rota inexistente...)
     if (error instanceof HttpException) {
       const status = error.getStatus();
-      const code = status === HttpStatus.BAD_REQUEST ? "INVALID_PAYLOAD" : `HTTP_${status}`;
-      response.status(status).json({ code, message: error.message });
+      response.status(status).json({ code: httpCode(status), message: error.message });
+      return;
+    }
+    // Erros do parser do Express (body grande demais, charset não suportado)
+    // não são HttpException, mas trazem o status 4xx certo e a marca de que
+    // podem ir para o cliente. Sem isto viravam 500, e 5xx diz "tente de novo".
+    const parserStatus = clientErrorStatus(error);
+    if (parserStatus !== undefined) {
+      response.status(parserStatus).json({ code: httpCode(parserStatus), message: (error as Error).message });
       return;
     }
 
@@ -48,4 +55,17 @@ export class ErrorFilter implements ExceptionFilter {
     const details = error instanceof ApplicationError ? error.details : {};
     response.status(status).json({ code: errorCode(error), message, ...details });
   }
+}
+
+function httpCode(status: number): string {
+  if (status === HttpStatus.BAD_REQUEST) return "INVALID_PAYLOAD";
+  if (status === HttpStatus.PAYLOAD_TOO_LARGE) return "PAYLOAD_TOO_LARGE";
+  return `HTTP_${status}`;
+}
+
+/** Status de um erro 4xx do body-parser (http-errors: `status` + `expose`), ou undefined. */
+function clientErrorStatus(error: unknown): number | undefined {
+  const e = error as { status?: unknown; expose?: unknown } | null;
+  const status = e?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && e?.expose === true ? status : undefined;
 }
