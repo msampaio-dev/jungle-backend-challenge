@@ -11,7 +11,15 @@ export interface OutboxRelayOptions {
   idleDelayMs: number;
   /** espera crescente entre rodadas que falham (padrão: 1s, 2s, 4s... até 10s) */
   failureBackoff?: FailureBackoffOptions;
+  /**
+   * Prazo de um lote. A transação (e o lock de cada wallet) fica aberta
+   * enquanto o lote publica; passado o prazo, o relay confirma o que já saiu
+   * e deixa o resto para a rodada seguinte. Padrão: 2s.
+   */
+  timeBudgetMs?: number;
 }
+
+const DEFAULT_TIME_BUDGET_MS = 2_000;
 
 export interface BatchResult {
   published: number;
@@ -30,6 +38,8 @@ export class OutboxRelay {
   private running = false;
   private loop: Promise<void> | undefined;
   private wake: (() => void) | undefined;
+  /** o último lote parou pelo prazo, com eventos ainda devidos */
+  private lastBatchCutShort = false;
 
   constructor(
     private readonly orm: MikroORM,
@@ -49,8 +59,18 @@ export class OutboxRelay {
       const result = { published: 0, failed: 0 };
       // wallet com mensagem ainda em backoff para ali: as seguintes esperam por ela
       const waiting = new Set<string>();
+      const budgetMs = this.options.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
+      const startedAt = performance.now();
+      this.lastBatchCutShort = false;
 
       for (const message of messages) {
+        // Prazo do lote estourado (SQS lento): confirma o que já saiu. O resto
+        // fica pendente sem gastar tentativa e, como a cabeça de cada wallet
+        // manda, sai na próxima rodada na mesma ordem.
+        if (performance.now() - startedAt >= budgetMs) {
+          this.lastBatchCutShort = true;
+          break;
+        }
         if (waiting.has(message.aggregateId) || !message.isDue(now)) {
           waiting.add(message.aggregateId);
           continue;
@@ -111,8 +131,8 @@ export class OutboxRelay {
         const { published, failed } = await this.publishBatch();
         const failedRounds = backoff.succeeded();
         if (failedRounds > 0) this.logger.log({ msg: "outbox relay recovered", failedRounds });
-        // lote cheio: provavelmente tem mais, não espera
-        if (published + failed === this.options.batchSize) delayMs = 0;
+        // lote cheio ou cortado pelo prazo: tem mais devido, não espera
+        if (published + failed === this.options.batchSize || this.lastBatchCutShort) delayMs = 0;
       } catch (error) {
         // banco fora do ar, por exemplo: espera cada vez mais e loga só de vez em quando
         delayMs = backoff.failed();

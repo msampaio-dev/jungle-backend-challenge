@@ -273,6 +273,53 @@ describe("relay", () => {
   });
 });
 
+describe("orçamento de tempo do lote", () => {
+  /** Publicador real que demora: o SQS respondendo devagar. */
+  const slowPublisher = (sent: string[]): EventPublisher => ({
+    async publish(message) {
+      await Bun.sleep(300);
+      await sqs.publish(message);
+      sent.push(message.id);
+    },
+  });
+
+  test("publicações lentas: o lote para no prazo, o resto fica pendente sem gastar tentativa e sai em ordem", async () => {
+    await publishEverything();
+    const w = await createWallet(orm, "0.00");
+    for (let i = 0; i < 8; i++) await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+    const recorded = await idsInOrder(w.walletId);
+    const sent: string[] = [];
+    const relay = new OutboxRelay(orm, slowPublisher(sent), wageringPorts(), { batchSize: 50, idleDelayMs: 0, timeBudgetMs: 1_000 });
+
+    const started = performance.now();
+    const first = await relay.publishBatch();
+    expect(performance.now() - started).toBeLessThan(2_000); // sem o orçamento: 8 × 300ms = 2,4s com a transação aberta
+    expect(first.published).toBeGreaterThan(0);
+    expect(first.published).toBeLessThan(8);
+    const pending = await sql("select attempts from outbox_messages where aggregate_id = ? and published_at is null", [w.walletId]);
+    expect(pending.length).toBe(8 - first.published);
+    expect(pending.every((r) => r.attempts === 0)).toBe(true);
+
+    while ((await relay.publishBatch()).published > 0);
+    expect(sent).toEqual(recorded);
+  });
+
+  test("lote cortado pelo prazo emenda a próxima rodada na hora, sem a espera ociosa", async () => {
+    await publishEverything();
+    const w = await createWallet(orm, "0.00");
+    for (let i = 0; i < 6; i++) await processor(orm).execute(command(w, { kind: "LOSS", amount: "0.00" }));
+    const sent: string[] = [];
+    // espera ociosa de 5s: se o laço esperasse depois de um corte, o resto ficaria parado
+    const relay = new OutboxRelay(orm, slowPublisher(sent), wageringPorts(), { batchSize: 50, idleDelayMs: 5_000, timeBudgetMs: 500 });
+
+    relay.start();
+    const started = performance.now();
+    while (sent.length < 6 && performance.now() - started < 4_000) await Bun.sleep(50);
+    await relay.stop();
+    expect(sent).toHaveLength(6);
+  });
+});
+
 describe("crash", () => {
   test("commit feito e processo morto antes de publicar: outra instância publica", async () => {
     await publishEverything();
