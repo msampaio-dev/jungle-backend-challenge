@@ -389,6 +389,27 @@ describe("consumidor SQS", () => {
     expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
   });
 
+  test("reentrega reconhecida pela inbox com ack que falha não vai para a DLQ: a operação já está confirmada", async () => {
+    options.maxAttempts = 1; // tentativas esgotadas: era quando o bug mandava para a DLQ
+    const w = await createWallet(orm, "100.00");
+    const msg = envelope(w, { amount: "25.00" });
+    await main.send(msg, w.walletId);
+    expect(await consumeAll(consumer())).toEqual(["processed"]);
+
+    await main.send(msg, w.walletId); // a mesma mensagem de novo: reentrega
+    const ackDown = {
+      send: (cmd: unknown, opts?: unknown) =>
+        cmd instanceof DeleteMessageCommand
+          ? Promise.reject(new Error("network blip on ack"))
+          : main.client.send(cmd as never, opts as never),
+    } as unknown as SQSClient;
+
+    const outcome = await consumer(useCase(), ackDown).pollOnce();
+    expect(await dlq.receiveAll()).toHaveLength(0); // incidente falso: a operação já estava confirmada
+    expect(outcome).toEqual(["duplicate"]);
+    expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
+  });
+
   test("consumidor parado e iniciado de novo volta a processar", async () => {
     const worker = consumer();
     worker.start();

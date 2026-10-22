@@ -256,7 +256,16 @@ export class SqsWagerConsumer {
       return this.deadLetter(message, "MESSAGE_ID_CONFLICT", "messageId was already used with a different payload");
     }
     metrics.duplicates.inc({ type: "inbox_redelivery" });
-    await this.ack(message);
+    // Como no caminho principal: o ack que falha NÃO é falha de processamento.
+    // A operação já está confirmada; tratado como erro, ia para o retry e, com
+    // as tentativas esgotadas, para a DLQ, um incidente falso. A mensagem
+    // volta depois da visibilidade e a inbox a reconhece de novo.
+    try {
+      await this.ack(message);
+    } catch (error) {
+      this.logger.warn({ msg: "ack failed for an already processed message; it will be acked on redelivery", ...log, error: describeError(error) });
+      return "duplicate";
+    }
     this.logger.log({ msg: "duplicate message acked", ...log });
     return "duplicate";
   }
