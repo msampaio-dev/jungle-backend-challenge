@@ -347,12 +347,36 @@ describe("consumidor SQS", () => {
     for (const w of wallets) expect((await snapshot(orm, w.walletId)).debits).toBe(2);
   });
 
-  test("worker morto depois do commit e antes do ack: reentrega não duplica", async () => {
+  test("worker morto de verdade (SIGKILL) depois do commit e antes do ack: reentrega não duplica", async () => {
     const w = await createWallet(orm, "100.00");
     const msg = envelope(w, { amount: "25.00" });
     await main.send(msg, w.walletId);
 
-    // cliente que trava para sempre no DeleteMessage: o processo "morreu" ali
+    // outro processo consome a mensagem e se mata no instante do ack, depois do commit
+    const child = Bun.spawn([process.execPath, "run", "test/integration/support/die-at-ack.ts", main.queueUrl, dlq.queueUrl], {
+      cwd: process.cwd(),
+      env: process.env,
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const exitCode = await child.exited;
+    expect(exitCode === 0 || exitCode === 3).toBe(false); // morreu: não terminou normalmente
+    expect(await inboxCount(msg.messageId)).toBe(1); // o commit aconteceu antes da morte
+    expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
+
+    // sem ack, a visibilidade (2s) expira, a mensagem volta e outra instância pega
+    await Bun.sleep(2_500);
+    expect(await consumeAll(consumer())).toEqual(["duplicate"]);
+    expect(await snapshot(orm, w.walletId)).toMatchObject({ balance: "75.00", debits: 1 });
+    expect(await dlq.receiveAll()).toHaveLength(0);
+  });
+
+  test("ack que nunca acontece (cliente travado depois do commit): reentrega não duplica", async () => {
+    const w = await createWallet(orm, "100.00");
+    const msg = envelope(w, { amount: "25.00" });
+    await main.send(msg, w.walletId);
+
+    // cliente que trava para sempre no DeleteMessage, no mesmo processo
     const dyingClient = {
       send: (cmd: unknown, opts?: unknown) =>
         cmd instanceof DeleteMessageCommand ? new Promise(() => {}) : main.client.send(cmd as never, opts as never),
