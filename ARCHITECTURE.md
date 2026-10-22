@@ -52,7 +52,7 @@ Usei o MikroORM 6, a opção preferencial do desafio. Cada operação abre um `e
 
 O lock da wallet usa `LockMode.PESSIMISTIC_WRITE` (`SELECT ... FOR UPDATE`) com `refresh: true`, para ler a linha do banco e não do cache. As escritas que precisam de condição vão em SQL explícito pelo `EntityManager`: o update do saldo com `WHERE version = ?`, o aluguel de pendentes e o claim da outbox. Assim a condição fica visível no código, em vez de depender do flush do Unit of Work.
 
-O domínio não conhece o ORM. Os registros de banco (`records.ts`) são mapeados com `EntitySchema`, sem decorators, e os repositórios convertem entre registro e entidade de domínio. `Money` vira duas colunas, `NUMERIC(18,2)` para o valor e `CHAR(3)` para a moeda, e volta como `Money` na leitura a partir do texto do Postgres (`balance::text`), sem passar por `number`.
+O domínio não conhece o ORM. Os registros de banco (`records.ts`) são mapeados com `EntitySchema`, sem decorators, e os repositórios convertem entre registro e entidade de domínio. `Money` vira duas colunas, `NUMERIC(18,2)` para o valor e `CHAR(3)` para a moeda. Na leitura, o tipo `decimal` do MikroORM entrega o valor como string, e o repositório o transforma em `Money`; o lado de leitura faz o mesmo com `::text` no SQL. Em nenhum caminho o valor passa por `number`.
 
 As migrations são versionadas, ficam numa lista explícita em `mikro-orm.config.ts` e todas têm `down`. O teste `migrations.test.ts` sobe todas num banco vazio, desce até zero, confere que não sobrou tabela nem função e sobe de novo. No Docker elas rodam uma vez no serviço `migrate`, antes das réplicas, para três instâncias não tentarem criar as mesmas tabelas ao mesmo tempo.
 
@@ -249,6 +249,8 @@ Logs em JSON, uma linha por evento, todos com o contexto da operação: `correla
 
 O logger descarta chaves com payload ou valor financeiro (`payload`, `body`, `data`, `money`, `amount`, `balance`, `difference` e parecidas). Erros do driver do banco saem só com o tipo e o código SQL, porque a mensagem deles traz o SQL com os valores. Os logs do MikroORM e do knex passam pelo mesmo logger, inclusive no container `migrate`.
 
+Toda requisição HTTP gera uma linha de acesso, exceto `/health/*` e `/metrics` quando respondem com sucesso: o healthcheck do Docker chama a readiness a cada 3s em cada réplica, e essas linhas eram 99% do log de um stack parado. Com erro, elas continuam saindo, porque aí são sinal.
+
 Métricas em `GET /metrics` (Prometheus):
 
 | Métrica | Cobre |
@@ -272,7 +274,7 @@ A reconciliação (`POST /wallets/:id/reconciliation`) compara o saldo gravado c
 
 Não implementei. O desafio não pontua autenticação e pede que ela não compita com o núcleo financeiro.
 
-O ponto de extensão está no código: `ProviderAuthGuard`, aplicado ao controller de transações, hoje deixa tudo passar. O desenho que eu adotaria é Keycloak, com cada provedor sendo um client OIDC com client credentials. O guard validaria o JWT pela JWKS do Keycloak e conferiria que o client do token é o `providerId` do payload, para um provedor não submeter em nome de outro. Os endpoints de health ficam abertos, como pede o desafio. As mensagens da fila são tratadas como canal interno confiável, mas o `providerId` delas passa pelas mesmas validações de domínio.
+O ponto de extensão está no código: `ProviderAuthGuard`, aplicado aos controllers de wallets e de transações, hoje deixa tudo passar. O desenho que eu adotaria é Keycloak, com cada provedor sendo um client OIDC com client credentials. O guard validaria o JWT pela JWKS do Keycloak e conferiria que o client do token é o `providerId` do payload, para um provedor não submeter em nome de outro. Os endpoints de health ficam abertos, como pede o desafio. As mensagens da fila são tratadas como canal interno confiável, mas o `providerId` delas passa pelas mesmas validações de domínio.
 
 ## Testes
 

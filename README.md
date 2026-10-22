@@ -93,7 +93,7 @@ Status HTTP de `POST /wagering/transactions`:
 | 422 | terminal: rejeitada por regra de negócio (`REJECTED`) ou falha permanente (`FAILED`) | lê o `failureCode`; reenviar devolve o mesmo resultado |
 | 503 | infraestrutura indisponível (banco, lock, pool) | reenvia com a mesma `Idempotency-Key` depois do `Retry-After` |
 
-Erros saem sempre como `{ "code": "...", "message": "..." }`. Os códigos de falha (`failureCode`) estão listados no ARCHITECTURE.md.
+Erros saem sempre com `{ "code": "...", "message": "..." }`; o 409 de wallet duplicada traz também o `walletId` existente. Os códigos de falha (`failureCode`) estão listados no ARCHITECTURE.md.
 
 ## Rodar local e testar
 
@@ -125,7 +125,7 @@ bun run test:integration
 
 A CI (`.github/workflows/ci.yml`) roda esses mesmos passos a cada push, num Ubuntu limpo, e no fim sobe o stack completo com três réplicas.
 
-`bun run test` roda os testes de unidade. `bun run test:integration` roda os de integração contra o Postgres e o LocalStack reais, em cerca de 2 minutos. Eles usam um banco próprio, `wagering_test`, que cada arquivo de teste recria do zero rodando as migrations. Cada teste cria as próprias filas no LocalStack. Os testes de vários processos sobem a app de verdade em processos filhos.
+`bun run test` roda os testes de unidade. `bun run test:integration` roda os de integração contra o Postgres e o LocalStack reais, em cerca de 2 minutos. Eles usam um banco próprio, `wagering_test`, que cada arquivo de teste recria do zero rodando as migrations. Os testes de fila criam as próprias filas no LocalStack; só o de configuração lê as filas do `init-sqs.sh`. Os testes de vários processos sobem a app de verdade em processos filhos.
 
 Para rodar a app fora do Docker (com os containers de Postgres e LocalStack de pé):
 
@@ -187,7 +187,7 @@ src/
   interfaces/http/ controllers, filtro de erros, correlation id, guard de autenticação (no-op)
   health/          liveness e readiness
 test/
-  unit/            domínio puro
+  unit/            sem banco nem fila: domínio, hash, logger, backoff e a regra de dependência entre camadas
   integration/     Postgres e LocalStack reais, vários processos
 docker/            nginx e script de criação das filas
 ```
