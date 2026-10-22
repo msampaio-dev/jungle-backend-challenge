@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import type { MikroORM } from "@mikro-orm/postgresql";
 import type { AddressInfo } from "node:net";
 import { AppModule } from "../../../src/app.module";
+import { configureHttp } from "../../../src/interfaces/http/configure-http";
 import { createTestOrm } from "./database";
 
 export interface TestApi {
@@ -26,6 +27,7 @@ export async function startTestApi(
 
   const app = await NestFactory.create(AppModule, { logger: false });
   if (options.logger) app.useLogger(options.logger);
+  configureHttp(app); // o mesmo preparo do main.ts
   await app.listen(0, "127.0.0.1");
   const { port } = app.getHttpServer().address() as AddressInfo;
   const base = `http://127.0.0.1:${port}`;

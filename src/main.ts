@@ -2,6 +2,7 @@ import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 import { JsonLogger } from "./infrastructure/observability/json-logger";
+import { configureHttp } from "./interfaces/http/configure-http";
 
 async function bootstrap(): Promise<void> {
   // bufferLogs: os logs da inicialização esperam o JsonLogger e também saem em JSON
@@ -12,6 +13,8 @@ async function bootstrap(): Promise<void> {
   // que é onde o consumidor SQS vai terminar o que está em andamento.
   app.enableShutdownHooks();
 
+  // correlação antes do parser de JSON (ver configure-http.ts)
+  configureHttp(app);
   await app.listen(Number(process.env.PORT ?? 3000));
 }
 

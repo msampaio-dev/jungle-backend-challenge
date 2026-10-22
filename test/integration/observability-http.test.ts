@@ -127,6 +127,21 @@ describe("logs da requisição", () => {
     });
   });
 
+  test("JSON quebrado também sai com correlação, instância e linha de acesso (o parser roda depois da correlação)", async () => {
+    const res = await api.call("POST", "/wagering/transactions", "{ isto não é json", {
+      "Idempotency-Key": "k-bad-json",
+      "X-Correlation-Id": "prov-bad-json",
+    });
+    expect(res.status).toBe(400);
+    expect(res.headers.get("x-correlation-id")).toBe("prov-bad-json");
+    expect(res.headers.get("x-instance")).toBeString();
+    expect(lines.find((l) => l.msg === "http request" && l.correlationId === "prov-bad-json")).toMatchObject({
+      method: "POST",
+      path: "/wagering/transactions",
+      status: 400,
+    });
+  });
+
   test("health e métricas que respondem bem não geram linha de acesso (o healthcheck chama a cada 3s)", async () => {
     for (const path of ["/health/ready", "/health/live", "/metrics"]) {
       const res = await api.call("GET", path, undefined, { "X-Correlation-Id": `probe-${path.replaceAll("/", "-")}` });
