@@ -362,7 +362,7 @@ export class SqsWagerConsumer {
  * envio à DLQ era recusado e a mensagem queimava as tentativas.
  */
 function sqsSafeText(text: string): string {
-  return text.replace(/[^\t\n\r -퟿-�\u{10000}-\u{10FFFF}]/gu, "?");
+  return text.replace(/[^\t\n\r\u0020-\uD7FF\uE000-\uFFFD\u{10000}-\u{10FFFF}]/gu, "?");
 }
 
 function receiveCountOf(message: Message): number {
