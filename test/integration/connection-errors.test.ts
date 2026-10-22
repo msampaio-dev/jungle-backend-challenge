@@ -139,3 +139,74 @@ describe("espera por conexão livre", () => {
     }
   });
 });
+
+/** ORM da app com variáveis de ambiente trocadas só durante a criação. */
+async function ormWithEnv(env: Record<string, string>): Promise<MikroORM> {
+  const saved = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, env);
+  try {
+    return await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL));
+  } finally {
+    // atribuir undefined a process.env grava o texto "undefined": se não existia, apaga
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+const show = async (o: MikroORM, setting: string) =>
+  Object.values((await o.em.getConnection().execute(`show ${setting}`))[0]!)[0];
+
+describe("timeouts de consulta e de sessão no Postgres", () => {
+  test("conexões da app têm limite por padrão; as da migration, não (uma migration longa não pode ser cortada)", async () => {
+    const app = await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL));
+    const migration = await MikroORM.init(createOrmConfig(process.env.DATABASE_TEST_URL, { sessionTimeouts: false }));
+    try {
+      expect(await show(app, "statement_timeout")).toBe("15s");
+      expect(await show(app, "idle_in_transaction_session_timeout")).toBe("30s");
+      expect(await show(migration, "statement_timeout")).toBe("0");
+      expect(await show(migration, "idle_in_transaction_session_timeout")).toBe("0");
+    } finally {
+      await app.close();
+      await migration.close();
+    }
+  });
+
+  test("consulta que passa do limite é cancelada e o erro é transitório (503, retry)", async () => {
+    const quick = await ormWithEnv({ DATABASE_STATEMENT_TIMEOUT_MS: "300" });
+    try {
+      const error = await quick.em.getConnection().execute("select pg_sleep(2)").then(() => undefined, (e: unknown) => e);
+      expect(error).toBeDefined();
+      expect(classifyError(error)).toBe(ErrorKind.Transient);
+    } finally {
+      await quick.close();
+    }
+  });
+
+  test("sessão parada segurando o lock de uma wallet é derrubada, e a wallet volta a andar", async () => {
+    const w = await createWallet(orm, "100.00");
+    const frozen = await ormWithEnv({ DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS: "500" });
+    let locked!: () => void;
+    const hasLock = new Promise<void>((resolve) => (locked = resolve));
+    // uma instância "congelada": trava a wallet e fica 7s sem fazer nada dentro da transação
+    const stuck = frozen.em
+      .fork()
+      .transactional(async (em) => {
+        await wageringPorts().wallets.lockById(em, w.walletId);
+        locked();
+        await Bun.sleep(7_000);
+      })
+      .then(() => "committed", () => "killed");
+    await hasLock;
+
+    // sem o limite de sessão, esta aposta desistiria no lock_timeout (5s)
+    const started = performance.now();
+    const result = await processor(orm).execute(command(w, { amount: "10.00" }));
+    expect(result.status).toBe(WagerTransactionStatus.Processed);
+    expect(performance.now() - started).toBeLessThan(4_000);
+
+    expect(await stuck).toBe("killed"); // a sessão parada não confirma nada
+    await frozen.close(true).catch(() => {});
+  }, 20_000);
+});

@@ -171,6 +171,8 @@ As variáveis estão em `.env.example`. As que mudam comportamento:
 | `SQS_CONSUMER_CONCURRENCY` | `5` | leitores em paralelo no consumidor |
 | `WALLET_LOCK_TIMEOUT_MS` | `5000` | espera máxima pelo lock de uma wallet; passou disso, 503 ou retry |
 | `DATABASE_ACQUIRE_TIMEOUT_MS` | `5000` | espera máxima por uma conexão livre do pool |
+| `DATABASE_STATEMENT_TIMEOUT_MS` | `15000` | duração máxima de uma consulta |
+| `DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS` | `30000` | tempo máximo parado dentro de uma transação; passou disso, o Postgres encerra a sessão e solta os locks |
 | `DATABASE_POOL_MAX` | `10` | conexões por instância |
 
 As URLs de fila só são exigidas quando o componente que as usa está ligado.

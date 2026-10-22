@@ -90,6 +90,8 @@ A `version` continua existindo e é uma segunda proteção: o update do saldo le
 
 O lock não espera para sempre. `SET LOCAL lock_timeout` (5s, `WALLET_LOCK_TIMEOUT_MS`) faz o Postgres desistir com `55P03`, que vira erro transitório: 503 na API, retry na fila. A espera por uma conexão livre do pool tem o mesmo limite (`DATABASE_ACQUIRE_TIMEOUT_MS`), em vez dos 60s padrão do knex.
 
+As conexões da app também têm limites de sessão no Postgres: `statement_timeout` de 15s, para nenhuma consulta ficar pendurada, e `idle_in_transaction_session_timeout` de 30s. O segundo protege a wallet de uma instância congelada no meio de uma transação (pausa longa, máquina travada): o Postgres encerra a sessão parada, o lock é solto e as próximas operações seguem. Os dois erros (`57014` e `25P03`) são transitórios. O limite de 30s fica acima do pior caso do relay, que segura uma transação por até cerca de 7s. As conexões do serviço `migrate` ficam sem esses limites, porque uma migration longa não pode ser cortada no meio.
+
 Todo caminho que muda saldo ou estado de uma transação (o use case, o worker de pendentes e a desistência do worker) trava a wallet antes de qualquer outra coisa, e nenhum deles trava duas wallets na mesma transação. Por isso não há ciclo de espera entre eles.
 
 ## Garantias no schema
@@ -288,7 +290,7 @@ Vários testes nasceram de um bug encontrado em revisão, e o histórico de comm
 
 Sobre robustez em produção:
 
-- Não há `idle_in_transaction_session_timeout` nem `statement_timeout`. Uma instância congelada (pausa longa, máquina travada) segurando o lock de uma wallet bloqueia aquela wallet até a conexão cair; as outras operações nela recebem 503 depois de 5s. O ajuste precisa respeitar o relay, que mantém uma transação aberta enquanto publica (item abaixo): o timeout teria que passar do pior caso dele, cerca de 7s.
+- Uma instância congelada segurando o lock de uma wallet ainda trava aquela wallet por até 30s, até o `idle_in_transaction_session_timeout` encerrar a sessão. Nesse intervalo, as operações naquela wallet recebem 503 depois de 5s. Um limite menor encurtaria a janela, mas precisa ficar acima do pior caso do relay (cerca de 7s), com folga para um SQS lento.
 - O relay mantém a transação e os locks abertos enquanto chama o SQS. É o que dá a garantia simples de um relay por wallet, em ordem. O custo está limitado: uma falha encerra o lote na hora, e o prazo de 2s corta publicações lentas, então a transação dura no máximo cerca de 7s. A solução sem esse custo seria alugar os eventos por wallet e publicar fora da transação, com o aluguel fazendo o papel do lock.
 - A perda de conexão no meio de uma consulta é reconhecida pela mensagem do driver `pg`, porque ele não põe código no erro. Se a mensagem mudar numa versão futura do driver, esse caso volta a ser tratado como erro inesperado (500 na API).
 - A inbox e a outbox crescem para sempre. Faltam jobs de limpeza: eventos publicados há mais de alguns dias e mensagens da inbox mais antigas que a janela de reentrega.

@@ -30,14 +30,38 @@ const knexLogger = new Logger("Knex");
  * 5s, como o lock_timeout da wallet; estourou, é erro transitório (503).
  */
 function acquireTimeoutMs(): number {
-  const value = Number(process.env.DATABASE_ACQUIRE_TIMEOUT_MS ?? 5_000);
-  if (!Number.isInteger(value) || value <= 0) {
-    throw new Error(`invalid DATABASE_ACQUIRE_TIMEOUT_MS: ${process.env.DATABASE_ACQUIRE_TIMEOUT_MS}`);
-  }
+  return positiveIntEnv("DATABASE_ACQUIRE_TIMEOUT_MS", 5_000);
+}
+
+function positiveIntEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isInteger(value) || value <= 0) throw new Error(`invalid ${name}: ${process.env[name]}`);
   return value;
 }
 
-export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
+/**
+ * Limites de sessão no Postgres, para as conexões da app.
+ *  - statement_timeout (15s): nenhuma consulta fica pendurada. Bem acima do
+ *    lock_timeout (5s) e do normal (milissegundos).
+ *  - idle_in_transaction_session_timeout (30s): uma instância congelada no
+ *    meio de uma transação (pausa longa, máquina travada) perde a sessão e
+ *    solta o lock da wallet, em vez de travá-la até a conexão cair. Fica
+ *    acima do pior caso do relay, que segura a transação por até ~7s.
+ * As migrations ficam sem limite: uma migration longa não pode ser cortada.
+ */
+function sessionTimeouts() {
+  return {
+    statement_timeout: positiveIntEnv("DATABASE_STATEMENT_TIMEOUT_MS", 15_000),
+    idle_in_transaction_session_timeout: positiveIntEnv("DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS", 30_000),
+  };
+}
+
+export interface OrmConfigOptions {
+  /** limites de consulta e de sessão (padrão: ligados; o script de migration desliga) */
+  sessionTimeouts?: boolean;
+}
+
+export function createOrmConfig(clientUrl = process.env.DATABASE_URL, options: OrmConfigOptions = {}) {
   return defineConfig({
     clientUrl,
     entities: [WalletRecordSchema, LedgerEntryRecordSchema, WagerTransactionRecordSchema],
@@ -46,6 +70,8 @@ export function createOrmConfig(clientUrl = process.env.DATABASE_URL) {
     pool: { min: 0, max: Number(process.env.DATABASE_POOL_MAX ?? 10), acquireTimeoutMillis: acquireTimeoutMs() },
     logger: (message) => ormLogger.log({ msg: plain(message) }),
     driverOptions: {
+      // opções nativas do driver pg, aplicadas a cada conexão do pool
+      connection: options.sessionTimeouts === false ? {} : sessionTimeouts(),
       log: {
         warn: (message: unknown) => knexLogger.warn({ msg: plain(message) }),
         error: (message: unknown) => knexLogger.error({ msg: plain(message) }),

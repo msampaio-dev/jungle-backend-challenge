@@ -15,7 +15,8 @@ if (direction !== "up" && direction !== "down") {
   process.exit(1);
 }
 
-const orm = await MikroORM.init(createOrmConfig());
+// sem os limites de sessão da app: uma migration longa não pode ser cortada no meio
+const orm = await MikroORM.init(createOrmConfig(undefined, { sessionTimeouts: false }));
 try {
   const migrator = orm.getMigrator();
   const executed = direction === "up" ? await migrator.up() : await migrator.down();

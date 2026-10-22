@@ -41,6 +41,9 @@ export enum ErrorKind {
  *  - 55P03 lock_not_available: estourou o lock_timeout esperando a wallet
  *  - 40001 serialization_failure: conflito de concorrência
  *  - 57P01/57P03/53300: banco reiniciando, subindo ou sem conexões livres
+ *  - 57014 query_canceled: a consulta passou do statement_timeout
+ *  - 25P03 idle_in_transaction_session_timeout: a sessão ficou parada demais
+ *    numa transação e o Postgres a encerrou (soltando os locks dela)
  */
 const TRANSIENT_CODES = new Set([
   "ECONNREFUSED",
@@ -52,6 +55,8 @@ const TRANSIENT_CODES = new Set([
   "57P01",
   "57P03",
   "53300",
+  "57014",
+  "25P03",
 ]);
 
 /**
