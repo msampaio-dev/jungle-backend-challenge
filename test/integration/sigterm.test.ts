@@ -56,27 +56,36 @@ test.skipIf(process.platform === "win32")(
       stderr: "pipe",
     });
     const output = new Response(app.stdout).text();
+    let exited = false;
+    void app.exited.then(() => (exited = true));
 
-    const ready = Date.now() + 30_000;
-    while (!(await fetch(`http://127.0.0.1:${port}/health/ready`).then((r) => r.ok, () => false))) {
-      if (Date.now() > ready) throw new Error("app did not become ready");
-      await Bun.sleep(100);
+    try {
+      const ready = Date.now() + 30_000;
+      while (!(await fetch(`http://127.0.0.1:${port}/health/ready`).then((r) => r.ok, () => false))) {
+        if (Date.now() > ready) throw new Error("app did not become ready");
+        await Bun.sleep(100);
+      }
+
+      const signaledAt = performance.now();
+      app.kill("SIGTERM");
+      const ended = await Promise.race([app.exited.then(() => true), Bun.sleep(25_000).then(() => false)]);
+      expect(ended).toBe(true); // terminou sozinho, sem precisar de SIGKILL
+      expect(performance.now() - signaledAt).toBeLessThan(20_000); // cabe nos 30s do Compose
+
+      // o que prova a parada ordenada: cada componente terminou o que fazia e registrou
+      const stopped = (await output)
+        .split("\n")
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line).msg as string)
+        .filter((msg) => msg.endsWith("stopped"));
+      expect(stopped.sort()).toEqual(["outbox relay stopped", "pending reference worker stopped", "sqs consumer stopped"]);
+    } finally {
+      // qualquer falha no caminho (app que não sobe, asserção) não pode deixar o processo vivo
+      if (!exited) {
+        app.kill("SIGKILL");
+        await app.exited;
+      }
     }
-
-    const signaledAt = performance.now();
-    app.kill("SIGTERM");
-    const ended = await Promise.race([app.exited.then(() => true), Bun.sleep(25_000).then(() => false)]);
-    if (!ended) app.kill("SIGKILL");
-    expect(ended).toBe(true); // terminou sozinho, sem precisar de SIGKILL
-    expect(performance.now() - signaledAt).toBeLessThan(20_000); // cabe nos 30s do Compose
-
-    // o que prova a parada ordenada: cada componente terminou o que fazia e registrou
-    const stopped = (await output)
-      .split("\n")
-      .filter((line) => line.startsWith("{"))
-      .map((line) => JSON.parse(line).msg as string)
-      .filter((msg) => msg.endsWith("stopped"));
-    expect(stopped.sort()).toEqual(["outbox relay stopped", "pending reference worker stopped", "sqs consumer stopped"]);
   },
   40_000,
 );
