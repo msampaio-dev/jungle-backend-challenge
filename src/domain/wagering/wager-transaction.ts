@@ -182,6 +182,10 @@ export class WagerTransaction {
     if ((kind === WagerTransactionKind.Bet || kind === WagerTransactionKind.Loss) && reference) {
       throw new InvalidWagerTransactionError(`${kind} does not accept a reference`);
     }
+    // sem isto ficaria PENDING_REFERENCE esperando por si mesma até o worker rejeitar
+    if (reference !== undefined && reference === props.externalTransactionId) {
+      throw new InvalidWagerTransactionError(`${kind} cannot reference itself`);
+    }
     // LOSS só registra o resultado; os demais movimentam dinheiro e precisam de valor positivo
     if (kind === WagerTransactionKind.Loss ? money.isNegative() : !money.isPositive()) {
       throw new InvalidWagerTransactionError(`invalid amount ${money} for ${kind}`);

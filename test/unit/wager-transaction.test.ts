@@ -59,6 +59,12 @@ describe("WagerTransaction.create", () => {
     expect(() => tx({ kind })).toThrow(/requires referenceExternalTransactionId/);
   });
 
+  test.each([Kind.Win, Kind.Refund, Kind.Rollback])("%s não pode referenciar a si mesmo: é payload inválido, não pendência", (kind) => {
+    expect(() => tx({ kind, externalTransactionId: "same-1", referenceExternalTransactionId: "same-1" })).toThrow(
+      /cannot reference itself/,
+    );
+  });
+
   test.each([Kind.Bet, Kind.Loss])("%s não aceita referência", (kind) => {
     expect(() => tx({ kind, referenceExternalTransactionId: "ext-0" })).toThrow(InvalidWagerTransactionError);
   });
