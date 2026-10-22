@@ -6,6 +6,16 @@ Stack: Bun 1.4, TypeScript estrito, NestJS 11, PostgreSQL 17, MikroORM 6, SQS no
 
 As decisões de projeto, os trade-offs e as limitações estão no [ARCHITECTURE.md](ARCHITECTURE.md).
 
+## Destaques
+
+As quatro garantias que o desafio exige valem nesses cenários: nenhum crédito ou débito em dobro, saldo nunca negativo, saldo sempre igual ao reconstruído pelo ledger e nenhum evento confirmado perdido. Os testes reproduzem as falhas de verdade, por exemplo:
+
+- três processos da aplicação sobre o mesmo banco, um deles morto com `kill -9` no meio da carga, e cada wallet termina com o saldo exato esperado;
+- a mesma aposta enviada 50 vezes em paralelo gera um único débito;
+- um worker morto com `SIGKILL` entre o commit e o ack da fila não duplica a operação quando a mensagem volta.
+
+As regras críticas também estão no schema, em constraints e triggers: um bug no código esbarra no banco antes de corromper um saldo. Os 238 testes de integração rodam contra PostgreSQL e SQS reais, sem mock de banco nem de fila, ao lado de 148 testes de unidade. A CI no GitHub Actions repete tudo num Ubuntu limpo a cada push e termina com o stack de três réplicas no ar.
+
 ## Subir com Docker
 
 Precisa de Docker com o Compose v2.
