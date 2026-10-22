@@ -174,7 +174,7 @@ Algumas interpretações:
 | `REFERENCE_ALREADY_REVERSED` | a referência já foi revertida (inclui WIN de uma BET devolvida) | nada a fazer |
 | `PROCESSING_FAILED` | `FAILED`: o worker desistiu depois de erros não transitórios | abre chamado; o erro está em `last_error` |
 
-Os erros de requisição (sem transação gravada) têm os próprios códigos no corpo: `INVALID_REQUEST`, `INVALID_MONEY`, `INVALID_TRANSACTION`, `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `WALLET_ALREADY_EXISTS` (com o `walletId` existente), `IDEMPOTENCY_CONFLICT`, `SERVICE_UNAVAILABLE` e `INTERNAL_ERROR`.
+Os erros de requisição (sem transação gravada) têm os próprios códigos no corpo: `INVALID_PAYLOAD` (JSON mal formado), `PAYLOAD_TOO_LARGE` (body acima de 100 KB), `INVALID_REQUEST`, `INVALID_MONEY`, `INVALID_TRANSACTION`, `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `WALLET_ALREADY_EXISTS` (com o `walletId` existente), `IDEMPOTENCY_CONFLICT`, `SERVICE_UNAVAILABLE` e `INTERNAL_ERROR`. Rota inexistente responde `HTTP_404`.
 
 ## Status HTTP
 
