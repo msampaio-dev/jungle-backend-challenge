@@ -1,5 +1,7 @@
 # Distributed Wagering Processor
 
+Solução do [desafio técnico de backend da Jungle Gaming](https://github.com/junglegaming/backend-challenge).
+
 Serviço que processa transações de aposta (BET, WIN, LOSS, REFUND, ROLLBACK) vindas de vários provedores, por HTTP e por uma fila SQS FIFO. O saldo de cada wallet fica consistente com um ledger imutável mesmo com mensagens duplicadas, fora de ordem e várias instâncias processando a mesma wallet ao mesmo tempo.
 
 Stack: Bun 1.4, TypeScript estrito, NestJS 11, PostgreSQL 17, MikroORM 6, SQS no LocalStack e Docker Compose.
